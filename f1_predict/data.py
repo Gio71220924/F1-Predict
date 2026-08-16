@@ -75,7 +75,7 @@ def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     # `is_accurate` may be object-dtype with real NaNs in it (FastF1 leaves
     # IsAccurate unset for some laps). Comparing directly to True treats NaN
     # as not-accurate without tripping pandas' fillna-downcast FutureWarning.
-    df = df[df["is_accurate"] == True]  # noqa: E712
+    df = df[df["is_accurate"].eq(True)]
     funnel["accurate"] = len(df)
 
     # '1' means green for the entire lap. Anything else mixes in yellow, SC or VSC.
@@ -89,6 +89,9 @@ def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     df = df[df["lap_seconds"] <= OUTLIER_RATIO * median]
     funnel["outlier"] = len(df)
 
+    # A lap whose `stint` is <NA> (FastF1 omits tyre data on some laps) joins no
+    # group, so `transform` gives it NaN and the comparison below drops it. That
+    # is the outcome we want: a lap with no stint tells us nothing about wear.
     stint_size = df.groupby(["driver", "stint"])["lap_number"].transform("size")
     df = df[stint_size >= MIN_STINT_LAPS]
     funnel["stint_length"] = len(df)

@@ -56,3 +56,41 @@ def prepare(
     )
     df["stint"] = df["stint"].astype("Int64")
     return df[COLUMNS].sort_values(["driver", "lap_number"]).reset_index(drop=True)
+
+
+DRY_COMPOUNDS = {"SOFT", "MEDIUM", "HARD"}
+OUTLIER_RATIO = 1.07
+MIN_STINT_LAPS = 3
+
+
+def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Reduce a prepared lap frame to representative racing laps.
+
+    Order matters: the outlier threshold is a median over laps that already
+    passed the validity, flag, and compound filters, so a race full of safety
+    car laps cannot drag the threshold upward.
+    """
+    funnel = {"start": len(df)}
+
+    # `is_accurate` may be object-dtype with real NaNs in it (FastF1 leaves
+    # IsAccurate unset for some laps). Comparing directly to True treats NaN
+    # as not-accurate without tripping pandas' fillna-downcast FutureWarning.
+    df = df[df["is_accurate"] == True]  # noqa: E712
+    funnel["accurate"] = len(df)
+
+    # '1' means green for the entire lap. Anything else mixes in yellow, SC or VSC.
+    df = df[df["track_status"] == "1"]
+    funnel["green"] = len(df)
+
+    df = df[df["compound"].isin(DRY_COMPOUNDS)]
+    funnel["dry"] = len(df)
+
+    median = df.groupby("driver")["lap_seconds"].transform("median")
+    df = df[df["lap_seconds"] <= OUTLIER_RATIO * median]
+    funnel["outlier"] = len(df)
+
+    stint_size = df.groupby(["driver", "stint"])["lap_number"].transform("size")
+    df = df[stint_size >= MIN_STINT_LAPS]
+    funnel["stint_length"] = len(df)
+
+    return df.reset_index(drop=True), funnel

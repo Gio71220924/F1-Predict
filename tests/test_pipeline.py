@@ -1,6 +1,6 @@
 import pandas as pd
 
-from f1_predict import data
+from f1_predict import data, model
 from tests.conftest import make_raw_laps, make_raw_weather
 
 
@@ -106,3 +106,103 @@ def test_baseline_is_per_driver_not_a_field_wide_median():
     baselines = out.groupby("driver")["baseline"].first()
     assert baselines["VER"] == 80.0
     assert baselines["NOR"] == 100.0
+
+
+def _clean(**kwargs):
+    round_no = kwargs.pop("round_no", 1)
+    laps = make_raw_laps(**kwargs)
+    prepared = data.prepare(laps, make_raw_weather(), round_no=round_no, event_name="Test")
+    clean, _ = data.filter_laps(prepared)
+    return data.add_baseline(clean)
+
+
+def _concat_clean(*frames):
+    """pd.concat over `_clean()` output, dropping pit_in/pit_out first.
+
+    Every synthetic fixture models no pit stops, so pit_in/pit_out are all-NaT
+    datetime64 columns in every frame. pandas 2.3.3's concat internals raise a
+    DeprecationWarning ("generic unit for NumPy timedelta") when concatenating
+    two frames that are both all-NaT in a datetime64 column -- a pandas/numpy
+    interaction bug, not anything about this data. Neither column is used by
+    the model layer, so dropping them before concat sidesteps it without
+    changing what's under test.
+    """
+    cols = [c for c in frames[0].columns if c not in ("pit_in", "pit_out")]
+    return pd.concat([f[cols] for f in frames], ignore_index=True)
+
+
+def test_single_stint_data_is_collinear_and_must_not_be_used_for_fitting():
+    """Guard rail: proves why every fit test passes `stint_length`.
+
+    With one stint, tyre_age + laps_remaining is constant, so the two columns
+    carry the same information and no fit can attribute lap time between them.
+    """
+    df = _clean(drivers=("VER",), n_laps=40, compound="MEDIUM", deg=0.04, fuel=0.05)
+    assert (df.tyre_age + df.laps_remaining).nunique() == 1
+
+
+def test_fit_recovers_planted_coefficients():
+    # lap_seconds = 90 + 0.04 * tyre_age + 0.05 * laps_remaining, no noise.
+    # stint_length=15 gives stints of 15/15/10, breaking the collinearity above.
+    df = _clean(
+        drivers=("VER", "NOR"), n_laps=40, stint_length=15,
+        compound="MEDIUM", deg=0.04, fuel=0.05,
+    )
+    assert (df.tyre_age + df.laps_remaining).nunique() > 1, "fixture is still collinear"
+
+    result = model.fit(df)
+
+    assert abs(result["coef"]["age_MEDIUM"] - 0.04) < 1e-6
+    assert abs(result["coef"]["fuel"] - 0.05) < 1e-6
+    assert result["n_rows"] == len(df)
+
+
+def test_fit_separates_compounds():
+    soft = _clean(
+        drivers=("VER",), n_laps=40, stint_length=15,
+        compound="SOFT", deg=0.10, fuel=0.05,
+    )
+    hard = _clean(
+        drivers=("NOR",), n_laps=40, stint_length=15,
+        compound="HARD", deg=0.02, fuel=0.05,
+    )
+    df = _concat_clean(soft, hard)
+
+    result = model.fit(df)
+
+    assert abs(result["coef"]["age_SOFT"] - 0.10) < 1e-6
+    assert abs(result["coef"]["age_HARD"] - 0.02) < 1e-6
+    assert result["coef"]["age_SOFT"] > result["coef"]["age_HARD"]
+
+
+def test_design_matrix_within_transform_demeans_by_driver_race_group():
+    """Pins the fixed-effects within transform itself, not just its downstream effect.
+
+    Two driver-race groups with different baselines (VER at base=90, NOR at
+    base=130) but identical wear/fuel slopes. If `_within` were replaced with
+    the identity function (no demeaning), the group means would leak straight
+    into y, X would still start each group's fuel column at different levels,
+    and both the per-group column means and cross-group fit would be wrong.
+    After a correct within transform every column -- including y -- must have
+    mean ~0 within each driver-race group, and the two groups' age_MEDIUM
+    columns must NOT be identical to the raw (undemeaned) tyre_age values.
+    """
+    ver = _clean(drivers=("VER",), n_laps=40, stint_length=15, compound="MEDIUM",
+                 base=90.0, deg=0.04, fuel=0.05)
+    nor = _clean(drivers=("NOR",), n_laps=40, stint_length=15, compound="MEDIUM",
+                 base=130.0, deg=0.04, fuel=0.05)
+    df = _concat_clean(ver, nor)
+
+    x, y = model.design_matrix(df)
+
+    groups = df.groupby(["round", "driver"])
+    for _, idx in groups.groups.items():
+        assert abs(y.loc[idx].mean()) < 1e-9
+        assert abs(x.loc[idx, "age_MEDIUM"].mean()) < 1e-9
+        assert abs(x.loc[idx, "fuel"].mean()) < 1e-9
+
+    # Raw tyre_age is never demeaned to begin with -- confirm the transform
+    # actually moved the data, rather than every group coincidentally already
+    # being centred (which would make the mean-~0 assertions above vacuous).
+    raw_age_medium = df["tyre_age"].astype(float) * (df["compound"] == "MEDIUM")
+    assert not x["age_MEDIUM"].equals(raw_age_medium)

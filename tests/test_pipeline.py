@@ -23,3 +23,21 @@ def test_prepare_produces_expected_columns_and_values():
     assert out.laps_remaining.iloc[-1] == 0
     assert out.track_temp.iloc[0] == 35.0
     assert out["round"].iloc[0] == 9
+
+
+def test_prepare_drops_laps_with_null_time_and_keeps_original_laps_remaining():
+    laps = make_raw_laps(drivers=("VER",), n_laps=10, base=90.0, deg=0.0, fuel=0.0)
+    weather = make_raw_weather(track_temp=35.0, air_temp=22.0)
+
+    # Realistic FastF1 quirk: the final lap (checkered flag) can have no
+    # recorded Time. merge_asof can't join on a null key, so prepare() must
+    # drop this row rather than raise -- but laps_remaining for the
+    # surviving laps must still reflect the original 10-lap race, not the
+    # 9-lap count left after the drop.
+    laps.loc[laps["LapNumber"] == 10, "Time"] = pd.NaT
+
+    out = data.prepare(laps, weather, round_no=9, event_name="British Grand Prix")
+
+    assert len(out) == 9
+    assert 10 not in out.lap_number.tolist()
+    assert out.laps_remaining.iloc[-1] == 1

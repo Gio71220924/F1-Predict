@@ -1,7 +1,14 @@
 """Load 2026 F1 lap data from FastF1 and reduce it to one clean row per racing lap."""
 from __future__ import annotations
 
+import logging
+import warnings
+from pathlib import Path
+
+import fastf1
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 COLUMNS = [
     "round", "event_name", "driver", "team", "lap_number", "stint",
@@ -97,3 +104,101 @@ def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     funnel["stint_length"] = len(df)
 
     return df.reset_index(drop=True), funnel
+
+
+def add_baseline(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach each driver's typical pace for the race, and the per-lap deviation from it.
+
+    `baseline` is the median clean lap of that driver in that race; `delta` is
+    `lap_seconds - baseline`. Subtracting the median strips out circuit length,
+    car pace, and driver skill, leaving tyre wear plus fuel burn -- the only
+    signal the model is allowed to learn. The median is used rather than the
+    minimum because the minimum of a noisy sample is biased low, while the
+    median over already-clean laps is robust.
+    """
+    df = df.copy()
+    df["baseline"] = df.groupby(["round", "driver"])["lap_seconds"].transform("median")
+    df["delta"] = df["lap_seconds"] - df["baseline"]
+    return df
+
+
+def _load_session(year: int, round_no: int):
+    """Fetch one race session from the FastF1 disk cache (or download it)."""
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    session = fastf1.get_session(year, round_no, "R")
+    # FastF1 is chatty with warnings (deprecations, missing-data notices) on
+    # session.load(); scope the suppression to this call so it doesn't mutate
+    # global warning state for the rest of the process.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(telemetry=False, weather=True, messages=False)
+    return session
+
+
+def build_race(year: int, round_no: int) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Build one race's clean, baselined lap frame from the FastF1 cache/network."""
+    session = _load_session(year, round_no)
+    prepared = prepare(
+        session.laps,
+        session.weather_data,
+        round_no=round_no,
+        event_name=session.event["EventName"],
+    )
+    clean, funnel = filter_laps(prepared)
+    return add_baseline(clean), funnel
+
+
+def build_season(year: int, out_path: str = "data/processed/laps.csv") -> pd.DataFrame:
+    """Build every completed race of a season into one CSV.
+
+    Rounds that raise are logged and skipped; a missing or malformed race must
+    not abort the whole run.
+    """
+    # Enable the cache before the very first network call (the schedule fetch);
+    # _load_session enables it again per-race, but that's too late for this
+    # call and FastF1 would otherwise spill it into its own default cache dir.
+    fastf1.Cache.enable_cache("cache")
+    schedule = fastf1.get_event_schedule(year, include_testing=False)
+    schedule = schedule[schedule.EventDate <= pd.Timestamp.now()]
+
+    frames = []
+    for _, event in schedule.iterrows():
+        round_no = int(event.RoundNumber)
+        try:
+            df, funnel = build_race(year, round_no)
+        except Exception as exc:  # noqa: BLE001 - one bad round must not stop the season
+            log.warning(
+                "round %s (%s) skipped: %s: %s",
+                round_no,
+                event.EventName,
+                type(exc).__name__,
+                exc,
+            )
+            print(f"{event.EventName:26s} SKIPPED: {type(exc).__name__}: {exc}")
+            continue
+        frames.append(df)
+        retention = len(df) / funnel["start"] if funnel["start"] else 0.0
+        print(
+            f"{event.EventName:26s} clean={len(df):5d}  raw={funnel['start']:5d}"
+            f"  retention={retention:6.1%}"
+        )
+
+    if not frames:
+        raise RuntimeError(f"no races could be built for {year}")
+
+    out = pd.concat(frames, ignore_index=True)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(out_path, index=False)
+    print(f"\nTOTAL clean laps: {len(out)}  ->  {out_path}")
+    return out
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int, default=2026)
+    parser.add_argument("--out", default="data/processed/laps.csv")
+    args = parser.parse_args()
+    build_season(args.year, args.out)

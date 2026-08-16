@@ -76,3 +76,33 @@ def test_filters_drop_short_stints():
 
     assert set(clean.stint.unique()) == {1}
     assert funnel["stint_length"] == 18
+
+
+def test_baseline_is_median_and_delta_centres_on_zero():
+    laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=21, base=90.0, deg=0.04, fuel=0.0)
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    clean, _ = data.filter_laps(prepared)
+    out = data.add_baseline(clean)
+
+    for driver, group in out.groupby("driver"):
+        assert group.baseline.nunique() == 1, "baseline must be constant per driver-race"
+        assert group.baseline.iloc[0] == group.lap_seconds.median()
+        assert abs(group.delta.median()) < 1e-9
+
+
+def test_baseline_is_per_driver_not_a_field_wide_median():
+    # VER and NOR run identical pace in the test above, so a bug that computes
+    # one median over the whole field (dropping the groupby) would pass it
+    # undetected. Make NOR 20s/lap slower than VER so that bug shows up: a
+    # field-wide median would assign both drivers the same baseline.
+    laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=21, base=80.0, deg=0.0, fuel=0.0)
+    nor = laps["Driver"] == "NOR"
+    laps.loc[nor, "LapTime"] = laps.loc[nor, "LapTime"] + pd.Timedelta(20.0, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    clean, _ = data.filter_laps(prepared)
+    out = data.add_baseline(clean)
+
+    baselines = out.groupby("driver")["baseline"].first()
+    assert baselines["VER"] == 80.0
+    assert baselines["NOR"] == 100.0

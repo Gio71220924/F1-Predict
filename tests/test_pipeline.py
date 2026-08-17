@@ -260,6 +260,70 @@ def test_cross_validation_beats_the_zero_baseline():
     assert scores["mae_mean"] < 0.1
 
 
+def test_cross_validation_detects_a_grouped_vs_naive_split():
+    """cross_validate's held-out-race MAE must actually depend on grouping by round.
+
+    Review finding: a fixture where every round shares the SAME degradation
+    slope cannot discriminate GroupKFold from a naive (non-grouped) KFold --
+    swapping the splitter gave identical mae_mean either way, because
+    design_matrix's within transform removes each round's baseline before
+    the split, so with a uniform slope there is no per-round signal left to
+    leak regardless of which rows land in which fold. Interleaving/shuffling
+    row order alone does not fix this either, for the same reason.
+
+    The actual discriminator is per-round SLOPE heterogeneity, combined with
+    a FEW rounds and leave-one-round-out folding (n_splits >= round count).
+    With R rounds of differing slope, a pooled (no group dummies) linear fit
+    trained on the other R-1 rounds targets roughly their average slope; for
+    the held-out round, the gap between its own slope and that (R-1)-round
+    average is the source of error. Excluding the held-out round entirely
+    (honest GroupKFold) amplifies that gap by a factor of about R/(R-1)
+    relative to a naive KFold, which -- because rows are shuffled here so
+    folds don't coincide with round boundaries -- always retains most of
+    every round's own rows in training and so tracks close to the FULL
+    R-round average instead.
+
+    Measured directly (this exact fixture, .venv/Scripts/python.exe, in
+    process, GroupKFold vs GroupKFold monkeypatched to
+    KFold(n_splits=n_splits, shuffle=False)):
+        grouped (real) mae_mean = 0.7560, invariant to row shuffling because
+            GroupKFold splits on the `round` column, not row position.
+        naive (KFold) mae_mean ranged 0.5056-0.5172 across 5 different row
+            shuffle seeds (0, 1, 7, 42, 99) -- stable, well clear of 0.7560.
+    0.6 sits with real margin above the naive ceiling (~0.517, margin
+    ~0.083) and comfortably below the honest grouped value (0.756, margin
+    ~0.156), so it separates the two regimes without being tuned to just
+    barely pass.
+
+    n_splits=10 is passed deliberately above the 3-round count so this test
+    also exercises the `min(n_splits, groups.nunique())` clamp in
+    cross_validate for free -- it must resolve to 3 (leave-one-round-out) to
+    reproduce the measured 0.7560, not silently no-op or raise.
+    """
+    degs = [0.01, 0.15, 0.40]  # deliberately heterogeneous per-round slopes
+    frames = []
+    for round_no, deg in enumerate(degs, start=1):
+        frames.append(
+            _clean(
+                round_no=round_no, drivers=("VER", "NOR"), n_laps=40, stint_length=15,
+                compound="MEDIUM", deg=deg, fuel=0.05, seed=round_no,
+            )
+        )
+    df = _concat_clean(*frames)
+    # Shuffle row order: GroupKFold ignores it (splits on the `round`
+    # column), but it is what stops a naive KFold's contiguous folds from
+    # coincidentally aligning with round boundaries.
+    df = df.sample(frac=1, random_state=7).reset_index(drop=True)
+
+    scores = model.cross_validate(df, n_splits=10)
+
+    assert scores["mae_mean"] > 0.6, (
+        "grouped (leave-one-round-out) CV on heterogeneous per-round slopes "
+        "must show high held-out error; a naive split measured 0.51-0.52 on "
+        "this exact fixture, well below this threshold"
+    )
+
+
 def test_physics_checks_catch_a_nonsense_fit():
     """check_physics keeps only the genuinely blocking checks.
 
@@ -291,3 +355,58 @@ def test_physics_checks_catch_a_nonsense_fit():
 
     absurd_fuel = {**good, "fuel": 0.9}
     assert any("fuel" in msg for msg in model.check_physics(absurd_fuel))
+
+
+def test_train_drops_planted_nulls_and_round_trips_through_save_load(tmp_path):
+    """train()/save()/load() had zero automated coverage before this test.
+
+    Their correctness rested entirely on one manual real-data run: a future
+    change to the dropna column list, or a field silently dropped before
+    save(), would pass the whole suite undetected. This builds a small
+    synthetic CSV directly (the columns train() reads: round, driver,
+    compound, tyre_age, laps_remaining, lap_seconds, event_name, baseline),
+    plants a known number of nulls in a modelled column, points both
+    csv_path and save_path at tmp_path so the real models/degradation.json
+    is never touched, and checks the null count reaches the result dict and
+    that load() reconstructs exactly what was saved.
+    """
+    rows = []
+    for round_no in (1, 2, 3):
+        for driver in ("VER", "NOR"):
+            for lap in range(1, 21):
+                stint, tyre_age = (1, lap) if lap <= 10 else (2, lap - 10)
+                compound = "SOFT" if stint == 1 else "MEDIUM"
+                laps_remaining = 20 - lap
+                rows.append(
+                    {
+                        "round": round_no,
+                        "driver": driver,
+                        "lap": lap,
+                        "compound": compound,
+                        "tyre_age": tyre_age,
+                        "laps_remaining": laps_remaining,
+                        "lap_seconds": 90.0 + 0.04 * tyre_age + 0.05 * laps_remaining,
+                        "event_name": f"Round {round_no}",
+                        "baseline": 90.0,
+                    }
+                )
+    raw = pd.DataFrame(rows)
+
+    # Plant exactly 4 nulls in a modelled column (round 1, VER, laps 1-4).
+    planted = (raw["round"] == 1) & (raw["driver"] == "VER") & (raw["lap"] <= 4)
+    assert planted.sum() == 4, "fixture setup: expected exactly 4 planted-null rows"
+    raw.loc[planted, "tyre_age"] = None
+    raw = raw.drop(columns="lap")
+
+    csv_path = tmp_path / "laps.csv"
+    save_path = tmp_path / "degradation.json"
+    raw.to_csv(csv_path, index=False)
+
+    result = model.train(csv_path=str(csv_path), save_path=str(save_path))
+
+    assert result["n_dropped_null"] == 4
+    assert "physics_violations" in result
+    assert "compound_ordering_note" in result
+
+    loaded = model.load(str(save_path))
+    assert loaded == result

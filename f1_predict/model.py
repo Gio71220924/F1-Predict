@@ -188,13 +188,20 @@ def load(path: str = "models/degradation.json") -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def train(csv_path: str = "data/processed/laps.csv") -> dict:
+def train(
+    csv_path: str = "data/processed/laps.csv",
+    save_path: str = "models/degradation.json",
+) -> dict:
     """Load, clean, fit, cross-validate, physics-check, and persist the model.
 
     2026 season data only. `data/processed/laps.csv` is built by
     `data.build_season` and must never include earlier seasons: the 2026
     regulation change (narrower tyres, 50/50 hybrid, far less fuel carried)
     makes those a different physical system.
+
+    `save_path` is a parameter (not a monkeypatch target) so tests can point
+    persistence at a tmp_path without ever touching the real
+    models/degradation.json; the default keeps the CLI behaviour unchanged.
     """
     df = pd.read_csv(csv_path)
 
@@ -216,7 +223,7 @@ def train(csv_path: str = "data/processed/laps.csv") -> dict:
     result["baseline_by_event"] = (
         df.groupby("event_name")["baseline"].median().round(3).to_dict()
     )
-    save(result)
+    save(result, save_path)
     return result
 
 

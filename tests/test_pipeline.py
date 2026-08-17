@@ -887,3 +887,92 @@ def test_hotter_track_pits_no_later_via_age_temp_interaction():
         COEF_TEMP, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD", temp_delta=15.0
     )
     assert hot_lap < cold_lap
+
+
+from f1_predict import replay
+
+
+def test_stream_yields_one_drivers_laps_in_order():
+    df = _clean(drivers=("VER", "NOR"), n_laps=20, compound="MEDIUM", deg=0.04, fuel=0.05)
+
+    frames = list(replay.stream(df, round_no=1, driver="VER"))
+
+    assert len(frames) == 20
+    assert [f["lap_number"] for f in frames] == list(range(1, 21))
+    assert all(f["compound"] == "MEDIUM" for f in frames)
+    assert frames[0]["tyre_age"] < frames[-1]["tyre_age"]
+    assert set(frames[0]) == {
+        "lap_number", "compound", "tyre_age", "laps_remaining", "lap_seconds", "delta",
+    }
+
+
+def test_stream_filters_by_round_not_just_driver():
+    """The brief's own test only ever builds a single-round frame, so a bug
+    that filtered on `driver` alone and silently ignored `round_no` would
+    slip through it undetected (see the brief's own hint about this). Build
+    a two-round frame for the same driver, with a different lap count and
+    compound per round, so an unfiltered result is visibly wrong on both
+    length and content -- not just coincidentally the right length.
+    """
+    round1 = _clean(
+        round_no=1, drivers=("VER", "NOR"), n_laps=10, compound="MEDIUM", deg=0.04, fuel=0.05,
+    )
+    round2 = _clean(
+        round_no=2, drivers=("VER", "NOR"), n_laps=15, compound="SOFT", deg=0.04, fuel=0.05,
+    )
+    df = _concat_clean(round1, round2)
+
+    frames = list(replay.stream(df, round_no=1, driver="VER"))
+
+    assert len(frames) == 10, "round_no=1 must not also pull in round 2's 15 VER laps"
+    assert all(f["compound"] == "MEDIUM" for f in frames), (
+        "round 2 is SOFT -- a leaked round-2 row would show up here"
+    )
+    assert [f["lap_number"] for f in frames] == list(range(1, 11))
+
+
+def test_stream_sorts_out_of_order_input():
+    """A fixture that is already in lap order can't tell you whether the
+    sort actually runs. Shuffle the rows before streaming so only a real
+    `sort_values("lap_number")` produces an ascending sequence.
+    """
+    df = _clean(drivers=("VER",), n_laps=20, compound="MEDIUM", deg=0.04, fuel=0.05)
+    shuffled = df.sample(frac=1, random_state=3).reset_index(drop=True)
+
+    frames = list(replay.stream(shuffled, round_no=1, driver="VER"))
+
+    lap_numbers = [f["lap_number"] for f in frames]
+    assert lap_numbers == sorted(lap_numbers)
+    assert lap_numbers == list(range(1, 21))
+
+
+def test_stream_raises_on_unknown_driver_or_round():
+    """Decision: an unknown driver, an unknown round, or a real combination
+    with zero surviving laps all raise ValueError rather than yielding a
+    silently empty stream. In Task 11's broadcast view, an empty stream and
+    a stalled one look identical to a user -- raising surfaces the mistake
+    immediately instead of rendering a blank "live" panel.
+    """
+    df = _clean(drivers=("VER", "NOR"), n_laps=10, compound="MEDIUM", deg=0.04, fuel=0.05)
+
+    with pytest.raises(ValueError):
+        list(replay.stream(df, round_no=1, driver="HAM"))  # unknown driver
+
+    with pytest.raises(ValueError):
+        list(replay.stream(df, round_no=99, driver="VER"))  # unknown round
+
+
+def test_stream_is_a_generator_deferring_work_to_first_iteration():
+    """`stream` yields, so filtering (and the ValueError above) must not run
+    until the caller actually iterates. Rewriting `stream` to eagerly filter
+    and return a list would raise immediately on the call below instead of
+    on the `list(...)` that follows -- that timing difference matters to a
+    caller (e.g. Task 11) that constructs the stream before it is ready to
+    consume it.
+    """
+    df = _clean(drivers=("VER",), n_laps=5, compound="MEDIUM", deg=0.04, fuel=0.05)
+
+    gen = replay.stream(df, round_no=1, driver="UNKNOWN")  # must not raise yet
+
+    with pytest.raises(ValueError):
+        list(gen)

@@ -59,6 +59,7 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series, green_only: bool = Tr
 
     per_stop = []
     unmatched = 0
+    missing_baseline = 0
     for driver, group in in_laps.groupby("driver"):
         driver_out = out_laps[out_laps["driver"] == driver]
         for _, in_lap in group.iterrows():
@@ -77,7 +78,23 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series, green_only: bool = Tr
                 in_lap["track_status"] == "1" and out_lap["track_status"] == "1"
             ):
                 continue
-            per_stop.append(float(in_lap["over_baseline"]) + float(out_lap["over_baseline"]))
+            cost = float(in_lap["over_baseline"]) + float(out_lap["over_baseline"])
+            if pd.isna(cost):
+                # `baselines` had no entry for this driver, so `.map` produced
+                # NaN. Counting it would pad the sample past the stability
+                # threshold with a value carrying no information, and a list
+                # of nothing but NaN would slip past the empty-check below
+                # and return nan as though it were an answer.
+                missing_baseline += 1
+                continue
+            per_stop.append(cost)
+
+    if missing_baseline:
+        log.warning(
+            "pit_loss: %d stop(s) skipped because `baselines` has no entry "
+            "for that driver",
+            missing_baseline,
+        )
 
     if unmatched:
         log.warning(

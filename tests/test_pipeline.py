@@ -504,6 +504,42 @@ def test_pit_loss_recovers_a_planted_cost():
     assert abs(loss - 22.0) < 0.5
 
 
+def test_pit_loss_skips_stops_whose_driver_has_no_baseline(caplog):
+    """A driver missing from `baselines` must not poison the result.
+
+    `.map(baselines)` yields NaN for an unknown driver. Those NaN costs used
+    to be appended like any other: they padded the sample past the stability
+    threshold with values carrying no information, and in the degenerate case
+    where NO driver had a baseline, `per_stop` was a non-empty list of pure
+    NaN -- which slipped past the empty-check and returned nan as though it
+    were a measurement. Every current caller derives `baselines` from the
+    same frame, so this never fires today; Task 9 is free to build it
+    differently, which is exactly when a silent nan would be worst.
+    """
+    laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+    for driver in ("VER", "NOR"):
+        mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
+        mask_out = (laps.Driver == driver) & (laps.LapNumber == 16)
+        laps.loc[mask_in, "LapTime"] = pd.Timedelta(102.0, unit="s")
+        laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+        laps.loc[mask_out, "LapTime"] = pd.Timedelta(100.0, unit="s")
+        laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    full = prepared.groupby("driver")["lap_seconds"].median()
+
+    # NOR dropped: VER's stop still measures 22 s, unaffected by the gap.
+    ver_only = full.drop("NOR")
+    loss = strategy.pit_loss(prepared, ver_only)
+    assert abs(loss - 22.0) < 0.5
+    assert "no entry" in caplog.text
+
+    # Nobody has a baseline: every cost is NaN, so there is no measurement to
+    # return. It must raise, not hand back nan.
+    with pytest.raises(ValueError):
+        strategy.pit_loss(prepared, full.drop(["VER", "NOR"]))
+
+
 def test_pit_loss_uses_median_not_mean_across_stops():
     """A safety-car in-lap can be 40+ s slow on its own; the median must
     stay anchored to the typical stop while a mean would be dragged toward

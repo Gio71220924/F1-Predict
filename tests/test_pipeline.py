@@ -206,3 +206,88 @@ def test_design_matrix_within_transform_demeans_by_driver_race_group():
     # being centred (which would make the mean-~0 assertions above vacuous).
     raw_age_medium = df["tyre_age"].astype(float) * (df["compound"] == "MEDIUM")
     assert not x["age_MEDIUM"].equals(raw_age_medium)
+
+
+def test_within_transform_demeans_by_round_not_just_driver():
+    """Pins the "round" key in GROUP specifically.
+
+    Every other fixture in this file uses a single round, so a regression
+    that dropped "round" from GROUP (leaving grouping by driver alone) would
+    slip through the whole file unnoticed. Here the same driver (VER) runs
+    two rounds with different baselines (90 vs 130). Grouping by
+    (round, driver) demeans each round separately, to ~0 mean each; grouping
+    by driver alone would pool both rounds into one mean instead, which is a
+    different number because the two rounds' baselines differ. Comparing the
+    real output against that driver-only-pooled alternative is what makes
+    this test fail if GROUP were ever reduced to ["driver"].
+    """
+    round1 = _clean(round_no=1, drivers=("VER",), n_laps=40, stint_length=15,
+                     compound="MEDIUM", base=90.0, deg=0.04, fuel=0.05)
+    round2 = _clean(round_no=2, drivers=("VER",), n_laps=40, stint_length=15,
+                     compound="MEDIUM", base=130.0, deg=0.04, fuel=0.05)
+    df = _concat_clean(round1, round2)
+
+    x, y = model.design_matrix(df)
+
+    # Correct grouping demeans each (round, driver) group to ~0 separately.
+    for _, idx in df.groupby(["round", "driver"]).groups.items():
+        assert abs(y.loc[idx].mean()) < 1e-9
+
+    # What driver-only grouping (the regression this test guards against)
+    # would produce: VER's laps from both rounds pooled into a single mean,
+    # rather than each round demeaned on its own.
+    driver_only_demeaned = df["lap_seconds"] - df.groupby("driver")["lap_seconds"].transform(
+        "mean"
+    )
+    assert not y.reset_index(drop=True).equals(driver_only_demeaned.reset_index(drop=True))
+
+
+def test_cross_validation_beats_the_zero_baseline():
+    frames = []
+    for round_no in range(1, 7):
+        frames.append(
+            _clean(
+                round_no=round_no, drivers=("VER", "NOR"), n_laps=40, stint_length=15,
+                compound="MEDIUM", deg=0.04, fuel=0.05, noise=0.05, seed=round_no,
+            )
+        )
+    df = _concat_clean(*frames)
+
+    scores = model.cross_validate(df, n_splits=3)
+
+    assert len(scores["mae_folds"]) == 3
+    assert scores["mae_mean"] < scores["mae_zero"], "model must beat predicting no degradation"
+    assert scores["mae_mean"] < 0.1
+
+
+def test_physics_checks_catch_a_nonsense_fit():
+    """check_physics keeps only the genuinely blocking checks.
+
+    Controller-ordered plan deviation (Task 6): compound names are relative
+    to each circuit's Pirelli allocation, and stint selection truncates the
+    observed tyre-age range differently per compound (short SOFT stints
+    never reach the cliff that long HARD stints do), so a pooled
+    age_SOFT > age_HARD comparison is not identifiable from an 11-race,
+    one-circuit-each dataset. That comparison is therefore NOT a physics
+    violation -- it is reported by compound_ordering_note as a diagnostic
+    instead. check_physics still non-negotiably requires every age_{compound}
+    to be > 0 and fuel to sit inside FUEL_RANGE.
+    """
+    good = {"age_SOFT": 0.10, "age_MEDIUM": 0.05, "age_HARD": 0.02, "fuel": 0.05}
+    assert model.check_physics(good) == []
+    assert model.compound_ordering_note(good) is None
+
+    negative_slope = {**good, "age_HARD": -0.02}
+    assert any("age_HARD" in msg for msg in model.check_physics(negative_slope))
+
+    soft_degrades_slower = {**good, "age_SOFT": 0.01}
+    assert model.check_physics(soft_degrades_slower) == [], (
+        "compound ordering is not identifiable from this dataset and must "
+        "not be treated as a physics violation -- see compound_ordering_note"
+    )
+    note = model.compound_ordering_note(soft_degrades_slower)
+    assert note is not None
+    assert "SOFT" in note and "HARD" in note
+
+    absurd_fuel = {**good, "fuel": 0.9}
+    assert any("fuel" in msg for msg in model.check_physics(absurd_fuel))

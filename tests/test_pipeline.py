@@ -410,3 +410,61 @@ def test_train_drops_planted_nulls_and_round_trips_through_save_load(tmp_path):
 
     loaded = model.load(str(save_path))
     assert loaded == result
+
+
+def test_temp_interaction_columns_are_added_on_request():
+    df = _clean(
+        drivers=("VER",), n_laps=40, stint_length=15,
+        compound="MEDIUM", deg=0.04, fuel=0.05,
+    )
+
+    plain, _ = model.design_matrix(df)
+    with_temp, _ = model.design_matrix(df, with_temp=True)
+
+    assert "age_temp_MEDIUM" not in plain.columns
+    assert "age_temp_MEDIUM" in with_temp.columns
+    assert len(with_temp.columns) == len(plain.columns) + len(model.COMPOUNDS)
+
+
+def test_temp_interaction_columns_are_centred_and_masked_by_compound():
+    """The column-name/count test above would pass even if age_temp_* were
+    filled with zeros -- it never inspects a value. Pin the actual arithmetic
+    instead, using a fixture built directly (bypassing data.prepare) so the
+    numbers are hand-checkable.
+
+    All 4 rows share one (round, driver) group, so `_within`'s group mean
+    equals the plain column mean, keeping the expected values computable by
+    hand: age_temp_{compound} = tyre_age * (track_temp - track_temp.mean()) *
+    is_compound, then demeaned once over all 4 rows.
+
+    track_temp mean = (20+40+25+45)/4 = 32.5, so centred = [-12.5, 7.5, -7.5, 12.5].
+    Raw age_temp_SOFT   = [1*-12.5, 3*7.5, 0, 0]         = [-12.5, 22.5, 0, 0]      -> mean 2.5
+    Raw age_temp_MEDIUM = [0, 0, 2*-7.5, 5*12.5]         = [0, 0, -15.0, 62.5]      -> mean 11.875
+    Raw age_temp_HARD   = [0, 0, 0, 0]                                              -> mean 0
+    Demeaned (subtract each column's own mean):
+        age_temp_SOFT   = [-15.0, 20.0, -2.5, -2.5]
+        age_temp_MEDIUM = [-11.875, -11.875, -26.875, 50.625]
+        age_temp_HARD   = [0.0, 0.0, 0.0, 0.0]  -- exactly zero: no HARD row exists,
+            so this pins that the mask multiplies by is_compound rather than, say,
+            leaking a shared temp*age term into every compound's column.
+    """
+    df = pd.DataFrame({
+        "round": [1, 1, 1, 1],
+        "driver": ["VER", "VER", "VER", "VER"],
+        "compound": ["SOFT", "SOFT", "MEDIUM", "MEDIUM"],
+        "tyre_age": [1.0, 3.0, 2.0, 5.0],
+        "laps_remaining": [5.0, 4.0, 3.0, 2.0],
+        "track_temp": [20.0, 40.0, 25.0, 45.0],
+        "lap_seconds": [90.0, 91.0, 92.0, 93.0],
+    })
+
+    x, _ = model.design_matrix(df, with_temp=True)
+
+    expected = {
+        "age_temp_SOFT": [-15.0, 20.0, -2.5, -2.5],
+        "age_temp_MEDIUM": [-11.875, -11.875, -26.875, 50.625],
+        "age_temp_HARD": [0.0, 0.0, 0.0, 0.0],
+    }
+    for column, values in expected.items():
+        for actual, want in zip(x[column].tolist(), values):
+            assert abs(actual - want) < 1e-9, f"{column}: {x[column].tolist()} != {values}"

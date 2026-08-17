@@ -36,13 +36,23 @@ def _within(frame: pd.DataFrame, groups: pd.DataFrame) -> pd.DataFrame:
     return frame - frame.groupby(keys).transform("mean")
 
 
-def design_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def design_matrix(
+    df: pd.DataFrame, with_temp: bool = False
+) -> tuple[pd.DataFrame, pd.Series]:
     raw = pd.DataFrame(index=df.index)
     for compound in COMPOUNDS:
-        raw[f"age_{compound}"] = df["tyre_age"].astype(float) * (
-            df["compound"] == compound
-        )
+        is_compound = df["compound"] == compound
+        raw[f"age_{compound}"] = df["tyre_age"].astype(float) * is_compound
     raw["fuel"] = df["laps_remaining"].astype(float)
+
+    if with_temp:
+        temp = df["track_temp"].astype(float)
+        centred = temp - temp.mean()
+        for compound in COMPOUNDS:
+            is_compound = df["compound"] == compound
+            raw[f"age_temp_{compound}"] = (
+                df["tyre_age"].astype(float) * centred * is_compound
+            )
 
     x = _within(raw, df)
     y = _within(df[["lap_seconds"]].astype(float), df)["lap_seconds"]
@@ -59,7 +69,7 @@ def fit(df: pd.DataFrame) -> dict:
     }
 
 
-def cross_validate(df: pd.DataFrame, n_splits: int = 5) -> dict:
+def cross_validate(df: pd.DataFrame, n_splits: int = 5, with_temp: bool = False) -> dict:
     """Leave-races-out cross-validation.
 
     Grouping on race (`round`) is mandatory. Laps from one race share a
@@ -68,7 +78,7 @@ def cross_validate(df: pd.DataFrame, n_splits: int = 5) -> dict:
     `GroupKFold` on `round` is the only honest split here -- every test fold
     is a race the model never saw during that fold's training.
     """
-    x, y = design_matrix(df)
+    x, y = design_matrix(df, with_temp=with_temp)
     groups = df["round"]
     splitter = GroupKFold(n_splits=min(n_splits, groups.nunique()))
 
@@ -179,6 +189,46 @@ def compound_ordering_note(coef: dict) -> str | None:
     )
 
 
+def _load_training_frame(csv_path: str) -> tuple[pd.DataFrame, int]:
+    """Load a laps CSV and drop rows null in any modelled column.
+
+    `laps.csv` carries rows with a null `tyre_age` (19 in the real 2026
+    file). `design_matrix` calls `.astype(float)` on that column, which turns
+    a null into NaN, and scikit-learn raises on a NaN design matrix. Shared
+    by `train` and `compare_temp` so both see identical, non-null input
+    rather than duplicating this dropna logic in two places.
+    """
+    df = pd.read_csv(csv_path)
+
+    required = ["tyre_age", "laps_remaining", "lap_seconds", "compound", "round", "driver"]
+    n_before = len(df)
+    df = df.dropna(subset=required)
+    n_dropped_null = n_before - len(df)
+    if n_dropped_null:
+        log.warning(
+            "dropped %d/%d rows with a null in a modelled column %s",
+            n_dropped_null, n_before, required,
+        )
+    return df, n_dropped_null
+
+
+def compare_temp(csv_path: str = "data/processed/laps.csv") -> dict:
+    """Does a tyre-age x track-temperature interaction earn its place?
+
+    The within transform removes between-race variation, and track temperature
+    moves little inside a single race, so this interaction is only weakly
+    identified. Measure it rather than assume it.
+    """
+    df, _ = _load_training_frame(csv_path)
+    without = cross_validate(df, with_temp=False)["mae_mean"]
+    with_temp = cross_validate(df, with_temp=True)["mae_mean"]
+    return {
+        "without": without,
+        "with": with_temp,
+        "improved": with_temp < without * 0.99,  # demand a 1% gain, not noise
+    }
+
+
 def save(result: dict, path: str = "models/degradation.json") -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -203,17 +253,7 @@ def train(
     persistence at a tmp_path without ever touching the real
     models/degradation.json; the default keeps the CLI behaviour unchanged.
     """
-    df = pd.read_csv(csv_path)
-
-    required = ["tyre_age", "laps_remaining", "lap_seconds", "compound", "round", "driver"]
-    n_before = len(df)
-    df = df.dropna(subset=required)
-    n_dropped_null = n_before - len(df)
-    if n_dropped_null:
-        log.warning(
-            "dropped %d/%d rows with a null in a modelled column %s",
-            n_dropped_null, n_before, required,
-        )
+    df, n_dropped_null = _load_training_frame(csv_path)
 
     result = fit(df)
     result["n_dropped_null"] = n_dropped_null

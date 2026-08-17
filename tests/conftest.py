@@ -63,7 +63,18 @@ def make_raw_laps(
                     "PitOutTime": pd.NaT,
                 }
             )
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # FastF1 stores PitInTime/PitOutTime as session-time Timedeltas, not
+    # Timestamps. Every row above is pd.NaT, and pandas' DataFrame(rows)
+    # infers dtype from an all-NaT column as datetime64[ns] rather than
+    # timedelta64[ns] -- there's no per-value type information for it to
+    # infer from. Re-seeding both columns explicitly as timedelta64[ns] NaT
+    # (unchanged value, corrected dtype) matches FastF1's real dtype and
+    # lets a test assign a real pd.Timedelta into a planted pit lap without
+    # tripping pandas' "Setting an item of incompatible dtype" FutureWarning.
+    for column in ("PitInTime", "PitOutTime"):
+        df[column] = pd.Series(pd.NaT, index=df.index, dtype="timedelta64[ns]")
+    return df
 
 
 def make_raw_weather(n=10, track_temp=35.0, air_temp=22.0, span_seconds=3000):

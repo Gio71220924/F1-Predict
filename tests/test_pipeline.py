@@ -485,26 +485,8 @@ def test_temp_interaction_columns_are_centred_and_masked_by_compound():
             assert abs(actual - want) < 1e-9, f"{column}: {x[column].tolist()} != {values}"
 
 
-def _with_timedelta_pit_columns(laps):
-    """Work around a `make_raw_laps` fixture quirk (conftest.py is not a file
-    this task may touch): `PitInTime`/`PitOutTime` are seeded with `pd.NaT`
-    on every row, and a column that is NaT everywhere gets pandas' default
-    datetime64[ns] dtype rather than the timedelta64[ns] dtype FastF1
-    actually uses for these two fields. Assigning a real `pd.Timedelta` into
-    a datetime64 column trips a "Setting an item of incompatible dtype"
-    FutureWarning, which this suite runs with as an error. Re-seeding both
-    columns as timedelta64[ns] NaT changes nothing observable (still NaT on
-    every lap that doesn't get a planted pit event) and sidesteps it.
-    """
-    laps = laps.copy()
-    for column in ("PitInTime", "PitOutTime"):
-        laps[column] = pd.Series(pd.NaT, index=laps.index, dtype="timedelta64[ns]")
-    return laps
-
-
 def test_pit_loss_recovers_a_planted_cost():
     laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
-    laps = _with_timedelta_pit_columns(laps)
     # Plant a 22 s pit stop: lap 15 is the in-lap (12 s lost), lap 16 the out-lap (10 s lost)
     for driver in ("VER", "NOR"):
         mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
@@ -531,7 +513,6 @@ def test_pit_loss_uses_median_not_mean_across_stops():
     only a genuine median can pass.
     """
     laps = make_raw_laps(drivers=("VER", "NOR", "PER"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
-    laps = _with_timedelta_pit_columns(laps)
 
     # VER: 22 s stop.  NOR: 24 s stop.  PER: 68 s stop (e.g. a stop taken
     # under a red flag/long safety-car delta) -- still a genuine, matched
@@ -561,7 +542,6 @@ def test_pit_loss_uses_median_not_mean_across_stops():
 
 def test_pit_loss_raises_when_no_stops_matched():
     laps = make_raw_laps(drivers=("VER",), n_laps=20, base=90.0, deg=0.0, fuel=0.0)
-    laps = _with_timedelta_pit_columns(laps)
     # No PitInTime/PitOutTime planted anywhere -- there is no stop to measure.
 
     prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
@@ -580,7 +560,6 @@ def test_pit_loss_skips_unmatched_in_laps_without_corrupting_result(caplog):
     logs a warning rather than quietly thinning the sample unnoticed.
     """
     laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
-    laps = _with_timedelta_pit_columns(laps)
 
     # VER: a clean, matched 22 s stop.
     mask_in = (laps.Driver == "VER") & (laps.LapNumber == 15)
@@ -606,3 +585,80 @@ def test_pit_loss_skips_unmatched_in_laps_without_corrupting_result(caplog):
     assert any("skipped" in message.lower() for message in caplog.messages), (
         "a partial skip should log, not stay completely silent"
     )
+
+
+def test_pit_loss_green_only_excludes_caution_affected_stops():
+    """`green_only` (default True) is a definitional choice about which
+    question pit_loss answers, not a data-cleaning convenience: a stop taken
+    under safety car/VSC is a different decision from a green-flag stop,
+    because the whole field is slowed on that lap too, so the in-lap/out-lap
+    excess measures the caution period as much as the pit lane.
+
+    Plants two clean green stops (20 s, 24 s) and three deliberately
+    caution-affected stops (80 s, 85 s, 90 s -- TrackStatus="4" on both the
+    in-lap and out-lap), sized so the pooled and green-only medians land on
+    completely different values with real separation, rather than the
+    caution stops being outvoted by a large clean majority.
+    """
+    drivers = ("VER", "NOR", "PER", "HAM", "RUS")
+    laps = make_raw_laps(drivers=drivers, n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+
+    # (in_excess, out_excess, is_caution_affected)
+    stops = {
+        "VER": (10.0, 10.0, False),  # 20 s, green
+        "NOR": (13.0, 11.0, False),  # 24 s, green
+        "PER": (40.0, 40.0, True),   # 80 s, caution
+        "HAM": (42.0, 43.0, True),   # 85 s, caution
+        "RUS": (45.0, 45.0, True),   # 90 s, caution
+    }
+    for driver, (in_excess, out_excess, caution) in stops.items():
+        mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
+        mask_out = (laps.Driver == driver) & (laps.LapNumber == 16)
+        laps.loc[mask_in, "LapTime"] = pd.Timedelta(90.0 + in_excess, unit="s")
+        laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+        laps.loc[mask_out, "LapTime"] = pd.Timedelta(90.0 + out_excess, unit="s")
+        laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+        if caution:
+            laps.loc[mask_in, "TrackStatus"] = "4"
+            laps.loc[mask_out, "TrackStatus"] = "4"
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    green_loss = strategy.pit_loss(prepared, baselines)  # green_only=True default
+    pooled_loss = strategy.pit_loss(prepared, baselines, green_only=False)
+
+    assert abs(green_loss - 22.0) < 0.5, "green-only median must reflect only the two clean stops"
+    assert abs(pooled_loss - 80.0) < 0.5, "pooled median must include the caution-affected stops"
+    assert abs(green_loss - pooled_loss) > 30, "the two modes must diverge with real separation"
+
+
+def test_pit_loss_logs_when_sample_is_small(caplog):
+    """A median over a handful of stops is fragile, and a caller consuming
+    just the returned float has no way to know how thin the sample was.
+    Plants 3 clean, matched, all-green stops (well under the stability
+    threshold) and asserts a warning naming the low count is logged --
+    without raising, since a thin measurement is still the best available
+    estimate for that circuit.
+    """
+    drivers = ("VER", "NOR", "PER")
+    laps = make_raw_laps(drivers=drivers, n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+    for driver in drivers:
+        mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
+        mask_out = (laps.Driver == driver) & (laps.LapNumber == 16)
+        laps.loc[mask_in, "LapTime"] = pd.Timedelta(102.0, unit="s")
+        laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+        laps.loc[mask_out, "LapTime"] = pd.Timedelta(100.0, unit="s")
+        laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    with caplog.at_level("WARNING"):
+        loss = strategy.pit_loss(prepared, baselines)
+
+    assert abs(loss - 22.0) < 0.5, "a small sample must still return the best available estimate"
+    assert any(
+        "3" in message and ("stability" in message.lower() or "stop" in message.lower())
+        for message in caplog.messages
+    ), "a thin sample should be logged, not silently returned as if it were solid"

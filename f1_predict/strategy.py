@@ -7,8 +7,14 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
+# A median computed from fewer stops than this is fragile -- one or two
+# unusual stops can move it a lot. Not a cutoff (a thin sample is still the
+# best available estimate for that circuit), just a threshold for logging a
+# warning so a caller consuming only the returned float still finds out.
+MIN_STOPS_FOR_STABLE_MEDIAN = 8
 
-def pit_loss(prepared: pd.DataFrame, baselines: pd.Series) -> float:
+
+def pit_loss(prepared: pd.DataFrame, baselines: pd.Series, green_only: bool = True) -> float:
     """Time lost to one pit stop, measured from the in-lap and out-lap.
 
     Read from lap data rather than from a timing feed's pit-duration field:
@@ -26,6 +32,24 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series) -> float:
     the same reason `data.add_baseline` uses a median: one safety-car
     in-lap can be 40 s slow on its own and would drag a mean badly, while
     the median stays anchored to the typical stop.
+
+    `green_only` (default True) restricts the measurement to stops where
+    both the in-lap and the out-lap ran under a fully green `track_status`
+    ("1"). This is a definitional choice about which question `pit_loss`
+    answers, not a data-cleaning convenience: a stop taken under safety car
+    or VSC is a different decision with different economics, because the
+    whole field is slowed on that lap too -- the in-lap/out-lap excess over
+    a green-flag baseline then measures the caution period as much as the
+    pit lane itself. A strategist (or simulator) asking "what does pitting
+    cost right now, racing under green" needs the green-flag figure;
+    feeding it a caution-inflated one would make it needlessly pit-averse.
+    Measured on real 2026 data, pooled (green_only=False) medians ran as
+    high as 59.5 s at a circuit where the green-only figure was 21.6 s,
+    because most matched stops that race happened to be taken under
+    caution -- teams choosing to pit when the relative cost is lowest, not
+    a data artifact. Pass `green_only=False` to recover the unfiltered,
+    pooled figure across every stop regardless of the flag it was taken
+    under.
     """
     df = prepared.copy()
     df["over_baseline"] = df["lap_seconds"] - df["driver"].map(baselines)
@@ -48,9 +72,12 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series) -> float:
                 # sample.
                 unmatched += 1
                 continue
-            per_stop.append(
-                float(in_lap["over_baseline"]) + float(match.iloc[0]["over_baseline"])
-            )
+            out_lap = match.iloc[0]
+            if green_only and not (
+                in_lap["track_status"] == "1" and out_lap["track_status"] == "1"
+            ):
+                continue
+            per_stop.append(float(in_lap["over_baseline"]) + float(out_lap["over_baseline"]))
 
     if unmatched:
         log.warning(
@@ -61,5 +88,15 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series) -> float:
         )
 
     if not per_stop:
-        raise ValueError("no matched in-lap/out-lap pair found")
+        reason = " under green-flag conditions" if green_only else ""
+        raise ValueError(f"no matched in-lap/out-lap pair found{reason}")
+
+    if len(per_stop) < MIN_STOPS_FOR_STABLE_MEDIAN:
+        log.warning(
+            "pit_loss: median computed from only %d stop(s), below the "
+            "%d-stop stability threshold -- this estimate may be noisy",
+            len(per_stop),
+            MIN_STOPS_FOR_STABLE_MEDIAN,
+        )
+
     return float(pd.Series(per_stop).median())

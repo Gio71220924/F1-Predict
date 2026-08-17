@@ -698,3 +698,192 @@ def test_pit_loss_logs_when_sample_is_small(caplog):
         "3" in message and ("stability" in message.lower() or "stop" in message.lower())
         for message in caplog.messages
     ), "a thin sample should be logged, not silently returned as if it were solid"
+
+
+COEF_LOW = {"age_SOFT": 0.10, "age_MEDIUM": 0.01, "age_HARD": 0.005, "fuel": 0.05}
+COEF_HIGH = {"age_SOFT": 0.40, "age_MEDIUM": 0.30, "age_HARD": 0.25, "fuel": 0.05}
+
+# Shipped-model-shaped: every age_temp_* positive, but age_temp_SOFT is far
+# bigger than age_temp_HARD so a hotter track disproportionately penalises
+# staying out on the first (SOFT) stint -- see
+# test_hotter_track_pits_no_later_via_age_temp_interaction.
+COEF_TEMP = {
+    "age_SOFT": 0.05,
+    "age_HARD": 0.03,
+    "fuel": 0.05,
+    "age_temp_SOFT": 0.05,
+    "age_temp_HARD": 0.005,
+}
+
+
+def test_simulate_counts_every_lap_and_charges_each_stop():
+    # zero degradation, zero fuel effect: every lap costs exactly the baseline
+    flat = {"age_SOFT": 0.0, "age_MEDIUM": 0.0, "age_HARD": 0.0, "fuel": 0.0}
+    total = strategy.simulate(
+        flat, baseline=90.0, pit_loss_s=20.0, total_laps=50,
+        plan=[("MEDIUM", 25), ("HARD", 25)],
+    )
+    assert abs(total - (50 * 90.0 + 20.0)) < 1e-6
+
+
+def test_simulate_rejects_a_plan_that_does_not_cover_the_race():
+    flat = {"age_MEDIUM": 0.0, "fuel": 0.0}
+    with pytest.raises(ValueError):
+        strategy.simulate(flat, 90.0, 20.0, 50, [("MEDIUM", 10)])
+
+
+def test_simulate_final_lap_has_zero_laps_remaining():
+    """Off-by-one guard on `laps_remaining`.
+
+    The implementation increments `lap` and THEN computes
+    `total_laps - lap`, so the final lap of the race must see
+    `laps_remaining == 0`. A version that read `laps_remaining` before
+    incrementing (or otherwise stayed one lap behind) would overcharge the
+    fuel term on every lap by one lap's worth of fuel coefficient.
+
+    Single stint covering the whole race, zero age effect, so the only
+    thing under test is the fuel/laps_remaining accounting. The closed-form
+    total assumes the classic 0..N-1 countdown (final lap remaining=0):
+    total = N*baseline + fuel * N*(N-1)/2. A one-lap-late off-by-one would
+    instead sum 1..N (fuel * N*(N+1)/2), which is fuel*N higher -- for
+    fuel=0.1, N=40 that is a 4.0 s discrepancy, far outside the tolerance
+    below.
+    """
+    coef = {"age_MEDIUM": 0.0, "fuel": 0.1}
+    n = 40
+    total = strategy.simulate(
+        coef, baseline=90.0, pit_loss_s=20.0, total_laps=n, plan=[("MEDIUM", n)]
+    )
+    expected = n * 90.0 + 0.1 * n * (n - 1) / 2
+    assert abs(total - expected) < 1e-6
+
+
+def test_low_degradation_prefers_one_stop_high_prefers_two():
+    def one_stop(coef):
+        return strategy.simulate(coef, 90.0, 20.0, 60, [("MEDIUM", 30), ("HARD", 30)])
+
+    def two_stop(coef):
+        return strategy.simulate(
+            coef, 90.0, 20.0, 60, [("MEDIUM", 20), ("HARD", 20), ("HARD", 20)]
+        )
+
+    assert one_stop(COEF_LOW) < two_stop(COEF_LOW)
+    assert two_stop(COEF_HIGH) < one_stop(COEF_HIGH)
+
+
+def test_pit_window_brackets_the_optimum():
+    best_lap, _ = strategy.best_pit_lap(
+        COEF_HIGH, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD"
+    )
+    low, high = strategy.pit_window(
+        COEF_HIGH, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD"
+    )
+    assert low <= best_lap <= high
+    assert 1 <= low <= high < 50
+
+
+def test_pit_window_tolerance_widens_the_window():
+    """`tolerance` must actually gate which laps make the window.
+
+    A `pit_window` that ignored `tolerance` (e.g. always returning just the
+    single best lap, or always returning the full candidate range) would
+    pass every other test in this file. A near-zero tolerance should
+    bracket only laps essentially tied with the optimum; a huge tolerance
+    should bracket the entire candidate range produced by `_one_stop_curve`
+    (MIN_STINT_LAPS .. total_laps - MIN_STINT_LAPS).
+    """
+    tight_low, tight_high = strategy.pit_window(
+        COEF_HIGH, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD", tolerance=0.01
+    )
+    wide_low, wide_high = strategy.pit_window(
+        COEF_HIGH, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD", tolerance=1000.0
+    )
+    assert (wide_high - wide_low) > (tight_high - tight_low)
+    assert wide_low == data.MIN_STINT_LAPS
+    assert wide_high == 50 - data.MIN_STINT_LAPS
+
+
+def test_one_stop_curve_respects_min_stint_bounds():
+    """The candidate range in `_one_stop_curve` must start at MIN_STINT_LAPS
+    and end at total_laps - MIN_STINT_LAPS inclusive on both ends. An
+    off-by-one in the `range(...)` call would silently drop the first or
+    last legal pit lap without any other test noticing, since
+    `best_pit_lap`/`pit_window` only ever see whichever candidates survive.
+    """
+    coef = {"age_SOFT": 0.0, "age_HARD": 0.0, "fuel": 0.0}
+    total_laps = 20
+    options = strategy._one_stop_curve(coef, 90.0, 20.0, total_laps, "SOFT", "HARD")
+    laps = [lap for lap, _ in options]
+    assert laps == sorted(laps)
+    assert min(laps) == data.MIN_STINT_LAPS
+    assert max(laps) == total_laps - data.MIN_STINT_LAPS
+    assert len(laps) == total_laps - 2 * data.MIN_STINT_LAPS + 1
+
+
+def test_lap_time_applies_centred_temp_interaction():
+    """`temp_delta` is pre-centred (track temp minus track_temp_mean), so at
+    the default 0.0 the interaction term must vanish, and away from 0.0 it
+    must apply `age_temp_{compound} * tyre_age * temp_delta` exactly.
+    """
+    coef = {"age_SOFT": 0.04, "fuel": 0.05, "age_temp_SOFT": 0.002}
+
+    at_mean = strategy.lap_time(
+        coef, 90.0, "SOFT", tyre_age=10, laps_remaining=5, temp_delta=0.0
+    )
+    assert abs(at_mean - (90.0 + 0.04 * 10 + 0.05 * 5)) < 1e-9
+
+    hotter = strategy.lap_time(
+        coef, 90.0, "SOFT", tyre_age=10, laps_remaining=5, temp_delta=8.0
+    )
+    expected_hotter = 90.0 + 0.04 * 10 + 0.05 * 5 + 0.002 * 10 * 8.0
+    assert abs(hotter - expected_hotter) < 1e-9
+
+    # A coefficient dict with no age_temp_* keys at all (every brief test
+    # above) must still work -- coef.get(...) has to default to 0.0.
+    no_interaction = {"age_SOFT": 0.04, "fuel": 0.05}
+    plain = strategy.lap_time(
+        no_interaction, 90.0, "SOFT", tyre_age=10, laps_remaining=5, temp_delta=8.0
+    )
+    assert abs(plain - (90.0 + 0.04 * 10 + 0.05 * 5)) < 1e-9
+
+
+def test_simulate_threads_temp_delta_into_lap_time():
+    """`simulate` must pass `temp_delta` all the way down to `lap_time`
+    rather than dropping it -- a hotter track with a positive age_temp
+    coefficient must raise the total for laps with tyre age > 0.
+    """
+    coef = {"age_MEDIUM": 0.04, "fuel": 0.0, "age_temp_MEDIUM": 0.01}
+    total_laps = 10
+    cold = strategy.simulate(
+        coef, 90.0, 20.0, total_laps, [("MEDIUM", total_laps)], temp_delta=0.0
+    )
+    hot = strategy.simulate(
+        coef, 90.0, 20.0, total_laps, [("MEDIUM", total_laps)], temp_delta=5.0
+    )
+    assert hot > cold
+
+
+def test_hotter_track_pits_no_later_via_age_temp_interaction():
+    """RULING 2: the age x track-temperature interaction must actually reach
+    `best_pit_lap`, not just `lap_time` in isolation. With coefficients
+    shaped like the shipped model (every age_temp_* positive) and
+    age_temp_SOFT sized well above age_temp_HARD, a hotter track
+    disproportionately penalises staying out on the first (SOFT) stint --
+    faster degradation means less to gain from delaying the stop. The
+    optimal pit lap must therefore come no later at temp_delta=+15 than at
+    temp_delta=0; asserted strictly earlier because COEF_TEMP is sized to
+    move the answer by more than one lap.
+
+    This assertion would pass trivially if `temp_delta` were silently
+    dropped somewhere on the way from `best_pit_lap` down to `lap_time`
+    (both calls would collapse to the same, temp-free answer) -- comparing
+    two DIFFERENT temp_delta values against each other, rather than just
+    calling best_pit_lap once, is what makes a dropped parameter visible.
+    """
+    cold_lap, _ = strategy.best_pit_lap(
+        COEF_TEMP, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD", temp_delta=0.0
+    )
+    hot_lap, _ = strategy.best_pit_lap(
+        COEF_TEMP, 90.0, 20.0, total_laps=50, first="SOFT", second="HARD", temp_delta=15.0
+    )
+    assert hot_lap < cold_lap

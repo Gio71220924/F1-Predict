@@ -5,6 +5,8 @@ import logging
 
 import pandas as pd
 
+from f1_predict.data import MIN_STINT_LAPS
+
 log = logging.getLogger(__name__)
 
 # A median computed from fewer stops than this is fragile -- one or two
@@ -117,3 +119,121 @@ def pit_loss(prepared: pd.DataFrame, baselines: pd.Series, green_only: bool = Tr
         )
 
     return float(pd.Series(per_stop).median())
+
+
+def lap_time(
+    coef: dict,
+    baseline: float,
+    compound: str,
+    tyre_age: int,
+    laps_remaining: int,
+    temp_delta: float = 0.0,
+) -> float:
+    """Predicted seconds for one lap.
+
+    `temp_delta` is track temperature minus the model's persisted
+    `track_temp_mean` -- i.e. already centred. `model.design_matrix` fits
+    the tyre-age x track-temperature interaction against deviations from
+    that mean (see its docstring), so the caller must subtract the same
+    constant before calling here; passing a raw Celsius value would apply
+    `age_temp_{compound}` against the wrong origin. The default 0.0 means
+    "at the training mean," where the interaction contributes nothing, so
+    a coefficient dict with no `age_temp_*` keys (every pre-Task-9 caller)
+    still behaves exactly as before.
+
+    ponytail: clean air only. No traffic, no safety car, no undercut against a
+    specific rival, no out-lap warm-up. Add a traffic term only if the app's
+    recommendations start disagreeing with reality in a reproducible way.
+    """
+    return (
+        baseline
+        + coef.get(f"age_{compound}", 0.0) * tyre_age
+        + coef.get("fuel", 0.0) * laps_remaining
+        + coef.get(f"age_temp_{compound}", 0.0) * tyre_age * temp_delta
+    )
+
+
+def simulate(
+    coef: dict,
+    baseline: float,
+    pit_loss_s: float,
+    total_laps: int,
+    plan: list[tuple[str, int]],
+    temp_delta: float = 0.0,
+) -> float:
+    """Total race seconds for an ordered list of (compound, stint_length)."""
+    covered = sum(length for _, length in plan)
+    if covered != total_laps:
+        raise ValueError(f"plan covers {covered} laps, expected {total_laps}")
+
+    total = 0.0
+    lap = 0
+    for compound, length in plan:
+        for age in range(1, length + 1):
+            lap += 1
+            total += lap_time(
+                coef, baseline, compound, age, total_laps - lap, temp_delta=temp_delta
+            )
+    total += pit_loss_s * (len(plan) - 1)
+    return total
+
+
+def _one_stop_curve(
+    coef: dict,
+    baseline: float,
+    pit_loss_s: float,
+    total_laps: int,
+    first: str,
+    second: str,
+    temp_delta: float = 0.0,
+) -> list[tuple[int, float]]:
+    return [
+        (
+            pit_lap,
+            simulate(
+                coef, baseline, pit_loss_s, total_laps,
+                [(first, pit_lap), (second, total_laps - pit_lap)],
+                temp_delta=temp_delta,
+            ),
+        )
+        for pit_lap in range(MIN_STINT_LAPS, total_laps - MIN_STINT_LAPS + 1)
+    ]
+
+
+def best_pit_lap(
+    coef: dict,
+    baseline: float,
+    pit_loss_s: float,
+    total_laps: int,
+    first: str,
+    second: str,
+    temp_delta: float = 0.0,
+) -> tuple[int, float]:
+    """Brute-force the one-stop pit lap. ~50 candidates; an optimiser would be overkill."""
+    options = _one_stop_curve(
+        coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+    )
+    return min(options, key=lambda item: item[1])
+
+
+def pit_window(
+    coef: dict,
+    baseline: float,
+    pit_loss_s: float,
+    total_laps: int,
+    first: str,
+    second: str,
+    tolerance: float = 0.5,
+    temp_delta: float = 0.0,
+) -> tuple[int, int]:
+    """Laps within `tolerance` seconds of the optimum.
+
+    Reported as a range rather than a single lap: the model's precision does
+    not justify claiming one exact lap beats its neighbour.
+    """
+    options = _one_stop_curve(
+        coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+    )
+    best_time = min(time for _, time in options)
+    close = [lap for lap, time in options if time <= best_time + tolerance]
+    return min(close), max(close)

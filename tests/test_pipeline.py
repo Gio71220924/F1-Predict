@@ -386,6 +386,10 @@ def test_train_drops_planted_nulls_and_round_trips_through_save_load(tmp_path):
                         "tyre_age": tyre_age,
                         "laps_remaining": laps_remaining,
                         "lap_seconds": 90.0 + 0.04 * tyre_age + 0.05 * laps_remaining,
+                        # Varies within and across races: train() fits the
+                        # age x temp interaction by default, and a constant
+                        # column would centre to all zeros and pin nothing.
+                        "track_temp": 30.0 + round_no + 0.1 * lap,
                         "event_name": f"Round {round_no}",
                         "baseline": 90.0,
                     }
@@ -407,6 +411,16 @@ def test_train_drops_planted_nulls_and_round_trips_through_save_load(tmp_path):
     assert result["n_dropped_null"] == 4
     assert "physics_violations" in result
     assert "compound_ordering_note" in result
+
+    # The interaction is centred on the training mean, so predicting a lap
+    # time later needs that exact constant. If it is not persisted, the
+    # simulator cannot reproduce the centring and would apply the
+    # age_temp_* coefficients against the wrong origin.
+    assert result["with_temp"] is True
+    surviving = pd.read_csv(csv_path).dropna(
+        subset=["tyre_age", "laps_remaining", "lap_seconds", "compound", "round", "driver"]
+    )
+    assert abs(result["track_temp_mean"] - surviving["track_temp"].mean()) < 1e-9
 
     loaded = model.load(str(save_path))
     assert loaded == result

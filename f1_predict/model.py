@@ -47,6 +47,11 @@ def design_matrix(
 
     if with_temp:
         temp = df["track_temp"].astype(float)
+        # Centred on THIS frame's mean. `train` persists that mean as
+        # `track_temp_mean`, because predicting a lap time later means
+        # centring the user's track temperature by the same constant the
+        # coefficients were fitted against -- recomputing a mean from
+        # whatever frame is at hand would silently misapply the interaction.
         centred = temp - temp.mean()
         for compound in COMPOUNDS:
             is_compound = df["compound"] == compound
@@ -59,8 +64,8 @@ def design_matrix(
     return x, y
 
 
-def fit(df: pd.DataFrame) -> dict:
-    x, y = design_matrix(df)
+def fit(df: pd.DataFrame, with_temp: bool = False) -> dict:
+    x, y = design_matrix(df, with_temp=with_temp)
     regressor = LinearRegression(fit_intercept=False).fit(x, y)
     return {
         "coef": dict(zip(x.columns, (float(v) for v in regressor.coef_))),
@@ -241,6 +246,7 @@ def load(path: str = "models/degradation.json") -> dict:
 def train(
     csv_path: str = "data/processed/laps.csv",
     save_path: str = "models/degradation.json",
+    with_temp: bool = True,
 ) -> dict:
     """Load, clean, fit, cross-validate, physics-check, and persist the model.
 
@@ -252,12 +258,20 @@ def train(
     `save_path` is a parameter (not a monkeypatch target) so tests can point
     persistence at a tmp_path without ever touching the real
     models/degradation.json; the default keeps the CLI behaviour unchanged.
+
+    `with_temp` defaults to True because `compare_temp` measured the
+    tyre-age x track-temperature interaction to be worth a 3.6% MAE
+    reduction on the real 2026 data, clearing the 1% noise threshold. The
+    lower-level `fit` and `design_matrix` keep it opt-in, so the decision
+    lives in exactly one place.
     """
     df, n_dropped_null = _load_training_frame(csv_path)
 
-    result = fit(df)
+    result = fit(df, with_temp=with_temp)
     result["n_dropped_null"] = n_dropped_null
-    result["cv"] = cross_validate(df)
+    result["cv"] = cross_validate(df, with_temp=with_temp)
+    result["with_temp"] = with_temp
+    result["track_temp_mean"] = float(df["track_temp"].mean())
     result["physics_violations"] = check_physics(result["coef"])
     result["compound_ordering_note"] = compound_ordering_note(result["coef"])
     result["baseline_by_event"] = (

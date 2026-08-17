@@ -1,6 +1,7 @@
 import pandas as pd
+import pytest
 
-from f1_predict import data, model
+from f1_predict import data, model, strategy
 from tests.conftest import make_raw_laps, make_raw_weather
 
 
@@ -482,3 +483,126 @@ def test_temp_interaction_columns_are_centred_and_masked_by_compound():
     for column, values in expected.items():
         for actual, want in zip(x[column].tolist(), values):
             assert abs(actual - want) < 1e-9, f"{column}: {x[column].tolist()} != {values}"
+
+
+def _with_timedelta_pit_columns(laps):
+    """Work around a `make_raw_laps` fixture quirk (conftest.py is not a file
+    this task may touch): `PitInTime`/`PitOutTime` are seeded with `pd.NaT`
+    on every row, and a column that is NaT everywhere gets pandas' default
+    datetime64[ns] dtype rather than the timedelta64[ns] dtype FastF1
+    actually uses for these two fields. Assigning a real `pd.Timedelta` into
+    a datetime64 column trips a "Setting an item of incompatible dtype"
+    FutureWarning, which this suite runs with as an error. Re-seeding both
+    columns as timedelta64[ns] NaT changes nothing observable (still NaT on
+    every lap that doesn't get a planted pit event) and sidesteps it.
+    """
+    laps = laps.copy()
+    for column in ("PitInTime", "PitOutTime"):
+        laps[column] = pd.Series(pd.NaT, index=laps.index, dtype="timedelta64[ns]")
+    return laps
+
+
+def test_pit_loss_recovers_a_planted_cost():
+    laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+    laps = _with_timedelta_pit_columns(laps)
+    # Plant a 22 s pit stop: lap 15 is the in-lap (12 s lost), lap 16 the out-lap (10 s lost)
+    for driver in ("VER", "NOR"):
+        mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
+        mask_out = (laps.Driver == driver) & (laps.LapNumber == 16)
+        laps.loc[mask_in, "LapTime"] = pd.Timedelta(102.0, unit="s")
+        laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+        laps.loc[mask_out, "LapTime"] = pd.Timedelta(100.0, unit="s")
+        laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    loss = strategy.pit_loss(prepared, baselines)
+
+    assert abs(loss - 22.0) < 0.5
+
+
+def test_pit_loss_uses_median_not_mean_across_stops():
+    """A safety-car in-lap can be 40+ s slow on its own; the median must
+    stay anchored to the typical stop while a mean would be dragged toward
+    the outlier. The brief's own test plants two IDENTICAL stops, which
+    cannot distinguish a median implementation from a mean one -- this
+    plants three DIFFERENT-sized stops so the two summaries diverge and
+    only a genuine median can pass.
+    """
+    laps = make_raw_laps(drivers=("VER", "NOR", "PER"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+    laps = _with_timedelta_pit_columns(laps)
+
+    # VER: 22 s stop.  NOR: 24 s stop.  PER: 68 s stop (e.g. a stop taken
+    # under a red flag/long safety-car delta) -- still a genuine, matched
+    # in-lap/out-lap pair, just an unusually slow one.
+    stops = {"VER": (12.0, 10.0), "NOR": (13.0, 11.0), "PER": (58.0, 10.0)}
+    for driver, (in_excess, out_excess) in stops.items():
+        mask_in = (laps.Driver == driver) & (laps.LapNumber == 15)
+        mask_out = (laps.Driver == driver) & (laps.LapNumber == 16)
+        laps.loc[mask_in, "LapTime"] = pd.Timedelta(90.0 + in_excess, unit="s")
+        laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+        laps.loc[mask_out, "LapTime"] = pd.Timedelta(90.0 + out_excess, unit="s")
+        laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    loss = strategy.pit_loss(prepared, baselines)
+
+    per_stop_costs = sorted(sum(v) for v in stops.values())  # [22.0, 24.0, 68.0]
+    expected_median = per_stop_costs[1]
+    expected_mean = sum(per_stop_costs) / len(per_stop_costs)
+    assert abs(expected_median - 24.0) < 1e-9  # sanity check on the fixture itself
+
+    assert abs(loss - expected_median) < 0.5
+    assert abs(loss - expected_mean) > 5.0, "result must not have collapsed into a mean"
+
+
+def test_pit_loss_raises_when_no_stops_matched():
+    laps = make_raw_laps(drivers=("VER",), n_laps=20, base=90.0, deg=0.0, fuel=0.0)
+    laps = _with_timedelta_pit_columns(laps)
+    # No PitInTime/PitOutTime planted anywhere -- there is no stop to measure.
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    with pytest.raises(ValueError):
+        strategy.pit_loss(prepared, baselines)
+
+
+def test_pit_loss_skips_unmatched_in_laps_without_corrupting_result(caplog):
+    """`if match.empty: continue` must not silently swallow a stop or mispair
+    an in-lap with the wrong out-lap. Plants one clean, matched stop (VER)
+    and one in-lap with no matching out-lap the following lap (NOR -- e.g. a
+    driver who retires in the pits). The unmatched lap must not shift the
+    result, and skipping it must not be completely silent: a partial skip
+    logs a warning rather than quietly thinning the sample unnoticed.
+    """
+    laps = make_raw_laps(drivers=("VER", "NOR"), n_laps=30, base=90.0, deg=0.0, fuel=0.0)
+    laps = _with_timedelta_pit_columns(laps)
+
+    # VER: a clean, matched 22 s stop.
+    mask_in = (laps.Driver == "VER") & (laps.LapNumber == 15)
+    mask_out = (laps.Driver == "VER") & (laps.LapNumber == 16)
+    laps.loc[mask_in, "LapTime"] = pd.Timedelta(102.0, unit="s")
+    laps.loc[mask_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+    laps.loc[mask_out, "LapTime"] = pd.Timedelta(100.0, unit="s")
+    laps.loc[mask_out, "PitOutTime"] = pd.Timedelta(1, unit="s")
+
+    # NOR: an in-lap with no matching out-lap the following lap. No
+    # PitOutTime is planted anywhere for NOR.
+    nor_in = (laps.Driver == "NOR") & (laps.LapNumber == 20)
+    laps.loc[nor_in, "LapTime"] = pd.Timedelta(150.0, unit="s")
+    laps.loc[nor_in, "PitInTime"] = pd.Timedelta(1, unit="s")
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+    baselines = prepared.groupby("driver")["lap_seconds"].median()
+
+    with caplog.at_level("WARNING"):
+        loss = strategy.pit_loss(prepared, baselines)
+
+    assert abs(loss - 22.0) < 0.5, "the unmatched NOR in-lap must not have polluted the result"
+    assert any("skipped" in message.lower() for message in caplog.messages), (
+        "a partial skip should log, not stay completely silent"
+    )

@@ -700,13 +700,31 @@ def test_pit_loss_logs_when_sample_is_small(caplog):
     ), "a thin sample should be logged, not silently returned as if it were solid"
 
 
+def test_a_race_too_short_for_two_stints_says_so():
+    """The bare `min() arg is an empty sequence` names nothing useful.
+
+    No real 2026 distance is anywhere near this short, but the app lets a
+    user type a lap count, and the error they'd see should point at the
+    cause.
+    """
+    coef = {"age_SOFT": 0.1, "age_HARD": 0.05, "fuel": 0.05}
+    for call in (strategy.best_pit_lap, strategy.pit_window):
+        with pytest.raises(ValueError, match="MIN_STINT_LAPS"):
+            call(coef, 90.0, 20.0, total_laps=5, first="SOFT", second="HARD")
+
+
 COEF_LOW = {"age_SOFT": 0.10, "age_MEDIUM": 0.01, "age_HARD": 0.005, "fuel": 0.05}
 COEF_HIGH = {"age_SOFT": 0.40, "age_MEDIUM": 0.30, "age_HARD": 0.25, "fuel": 0.05}
 
-# Shipped-model-shaped: every age_temp_* positive, but age_temp_SOFT is far
-# bigger than age_temp_HARD so a hotter track disproportionately penalises
-# staying out on the first (SOFT) stint -- see
-# test_hotter_track_pits_no_later_via_age_temp_interaction.
+# Same signs and order of magnitude as the shipped model, but with the
+# dominance deliberately REVERSED: here age_temp_SOFT far exceeds
+# age_temp_HARD, so heat punishes staying out on the first stint and the
+# optimum moves earlier. The real fit is the other way round
+# (age_temp_HARD 0.00276 is the largest of the three), which is why the
+# real MEDIUM->HARD sanity run pits LATER as temperature rises, not
+# earlier. This fixture exercises the mechanism in the direction that is
+# easiest to assert; it is not a claim about which way the real model
+# moves. See test_hotter_track_pits_no_later_via_age_temp_interaction.
 COEF_TEMP = {
     "age_SOFT": 0.05,
     "age_HARD": 0.03,

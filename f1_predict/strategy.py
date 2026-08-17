@@ -200,6 +200,21 @@ def _one_stop_curve(
     ]
 
 
+def _require_candidates(options: list, total_laps: int) -> list:
+    """A race too short for two legal stints has no one-stop to search.
+
+    Without this, `min()` over the empty curve raises "min() arg is an
+    empty sequence", which says nothing about the actual problem. No 2026
+    race distance comes close, but the app lets a user set total_laps.
+    """
+    if not options:
+        raise ValueError(
+            f"total_laps={total_laps} leaves no legal one-stop split: "
+            f"both stints need at least MIN_STINT_LAPS={MIN_STINT_LAPS} laps"
+        )
+    return options
+
+
 def best_pit_lap(
     coef: dict,
     baseline: float,
@@ -210,8 +225,11 @@ def best_pit_lap(
     temp_delta: float = 0.0,
 ) -> tuple[int, float]:
     """Brute-force the one-stop pit lap. ~50 candidates; an optimiser would be overkill."""
-    options = _one_stop_curve(
-        coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+    options = _require_candidates(
+        _one_stop_curve(
+            coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+        ),
+        total_laps,
     )
     return min(options, key=lambda item: item[1])
 
@@ -231,8 +249,11 @@ def pit_window(
     Reported as a range rather than a single lap: the model's precision does
     not justify claiming one exact lap beats its neighbour.
     """
-    options = _one_stop_curve(
-        coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+    options = _require_candidates(
+        _one_stop_curve(
+            coef, baseline, pit_loss_s, total_laps, first, second, temp_delta=temp_delta
+        ),
+        total_laps,
     )
     best_time = min(time for _, time in options)
     close = [lap for lap, time in options if time <= best_time + tolerance]

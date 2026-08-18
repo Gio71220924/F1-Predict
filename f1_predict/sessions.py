@@ -124,3 +124,68 @@ def load_session(year: int, round_no: int, name: str) -> tuple[pd.DataFrame, boo
     )
     clean, _ = data.filter_laps(prepared, min_stint_laps=1)
     return clean, is_wet(session.weather_data)
+
+
+FINISHED_STATUSES = ("Finished", "Lapped")
+
+
+def is_finisher(status: pd.Series) -> pd.Series:
+    """True for drivers who were classified at the end of the race.
+
+    FastF1 reports 'Lapped' for a driver who finished one or more laps
+    down. They finished. Only 'Retired' and 'Did not start' are genuine
+    non-finishers -- counting 'Lapped' as a failure reports 53% DNF for
+    2026 where the real figure is 21%.
+    """
+    return status.isin(FINISHED_STATUSES)
+
+
+def race_result(year: int, round_no: int) -> pd.DataFrame:
+    """Grid slot, finishing position, and whether each driver finished."""
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    session = fastf1.get_session(year, round_no, "R")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(telemetry=False, weather=False, messages=False)
+
+    results = session.results
+    return pd.DataFrame(
+        {
+            "driver": results["Abbreviation"].values,
+            "grid": results["GridPosition"].astype(float).values,
+            "position": results["Position"].astype(float).values,
+            "finished": is_finisher(results["Status"]).values,
+        }
+    ).reset_index(drop=True)
+
+
+def race_positions(year: int, round_no: int) -> pd.DataFrame:
+    """Per-lap track position, for measuring how hard a circuit is to pass at.
+
+    Reads raw session laps rather than `data/processed/laps.csv`, because
+    `data.prepare` drops the Position column the processed table never
+    needed. Verified at Hungary 2026: 1431 laps, 1 null position.
+    """
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    session = fastf1.get_session(year, round_no, "R")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(telemetry=False, weather=False, messages=False)
+
+    laps = session.laps
+    return (
+        pd.DataFrame(
+            {
+                "driver": laps["Driver"].values,
+                "lap_number": laps["LapNumber"].astype(float).values,
+                "position": laps["Position"].astype(float).values,
+                "pitted": (
+                    laps["PitInTime"].notna() | laps["PitOutTime"].notna()
+                ).values,
+            }
+        )
+        .dropna(subset=["position"])
+        .reset_index(drop=True)
+    )

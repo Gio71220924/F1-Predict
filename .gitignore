@@ -5,3 +5,8 @@ models/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Design spec and implementation plan: kept on disk, deliberately not
+# committed. Listed here so a blanket "git add -A" cannot commit them by
+# accident.
+docs/

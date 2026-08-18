@@ -66,6 +66,44 @@ def is_wet(weather: pd.DataFrame) -> bool:
     return bool(weather["Rainfall"].any())
 
 
+QUALI_SEGMENTS = ["Q1", "Q2", "Q3"]
+
+
+def best_quali_time(results: pd.DataFrame) -> pd.Series:
+    """Fastest lap each driver set across whichever segments they ran.
+
+    Qualifying is an elimination format: a driver knocked out in Q1 has no
+    Q2 or Q3 time, and reading only Q3 would discard half the field.
+    """
+    segments = results[QUALI_SEGMENTS].apply(lambda column: column.dt.total_seconds())
+    best = segments.min(axis=1)
+    best.index = results["Abbreviation"]
+    return best.dropna()
+
+
+def quali_result(year: int, round_no: int) -> pd.DataFrame:
+    """Official qualifying classification plus each driver's gap to pole."""
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    session = fastf1.get_session(year, round_no, "Q")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(telemetry=False, weather=False, messages=False)
+
+    best = best_quali_time(session.results)
+    pole = best.min()
+    positions = session.results.set_index("Abbreviation")["Position"]
+
+    return pd.DataFrame(
+        {
+            "driver": best.index,
+            "quali_position": positions.reindex(best.index).astype(float).values,
+            "quali_seconds": best.values,
+            "quali_gap_pct": ((best - pole) / pole).values,
+        }
+    ).reset_index(drop=True)
+
+
 def load_session(year: int, round_no: int, name: str) -> tuple[pd.DataFrame, bool]:
     """Clean laps for one session, plus whether it ran wet.
 

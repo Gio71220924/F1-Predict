@@ -97,3 +97,24 @@ def test_low_fuel_best_ignores_long_runs():
 def test_low_fuel_best_is_empty_when_no_short_stints_exist():
     laps = _session_frame([("VER", 1, 90.0 + i * 0.1) for i in range(6)])
     assert quali.low_fuel_best(laps, max_stint=4).empty
+
+
+def test_best_quali_time_takes_the_fastest_segment_run():
+    # A driver knocked out in Q1 has no Q2 or Q3 time. Their best lap is
+    # whatever they set in the segments they did run -- not a null.
+    results = pd.DataFrame(
+        {
+            "Abbreviation": ["NOR", "VER", "OCO"],
+            "Position": [1.0, 2.0, 16.0],
+            "Q1": [pd.Timedelta(78.2, unit="s"), pd.Timedelta(78.6, unit="s"),
+                   pd.Timedelta(79.9, unit="s")],
+            "Q2": [pd.Timedelta(77.4, unit="s"), pd.Timedelta(78.2, unit="s"), pd.NaT],
+            "Q3": [pd.Timedelta(77.2, unit="s"), pd.Timedelta(77.7, unit="s"), pd.NaT],
+        }
+    )
+
+    best = sessions.best_quali_time(results)
+
+    assert best["NOR"] == pytest.approx(77.2)
+    assert best["VER"] == pytest.approx(77.7)
+    assert best["OCO"] == pytest.approx(79.9), "a Q1 exit must still have a time"

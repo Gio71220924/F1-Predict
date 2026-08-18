@@ -27,6 +27,7 @@ FEATURES = [
     "form_prev",
     "form_known",
     "is_sprint",
+    "imputed",
 ]
 
 
@@ -54,7 +55,7 @@ def low_fuel_best(laps: pd.DataFrame, max_stint: int = 4) -> pd.Series:
     return session_gaps(laps[size <= max_stint])
 
 
-def add_form(frame: pd.DataFrame) -> pd.DataFrame:
+def add_form(frame: pd.DataFrame, exclude_rounds: frozenset = frozenset()) -> pd.DataFrame:
     """Each driver's mean qualifying gap across PREVIOUS rounds only.
 
     Driver identity dominates qualifying, but one dummy per driver would
@@ -64,9 +65,17 @@ def add_form(frame: pd.DataFrame) -> pd.DataFrame:
 
     The shift is the whole point: an expanding mean that included the
     current round would let the model see the result it is predicting.
+
+    `exclude_rounds` drops those rounds from every driver's history without
+    dropping their rows. Cross-validation needs it: computing form once over
+    the whole season means a training row from round 8 carries a mean that
+    used round 5, even in the fold where round 5 is the held-out race. The
+    per-row rule is still honoured either way, but the held-out race should
+    not reach the training features at all.
     """
     frame = frame.sort_values(["driver", "round"]).copy()
-    frame["form_prev"] = frame.groupby("driver")["quali_gap_pct"].transform(
+    history = frame["quali_gap_pct"].where(~frame["round"].isin(exclude_rounds))
+    frame["form_prev"] = history.groupby(frame["driver"]).transform(
         lambda s: s.expanding().mean().shift(1)
     )
 
@@ -78,7 +87,9 @@ def add_form(frame: pd.DataFrame) -> pd.DataFrame:
     # the offset for unknown-form rows instead of believing the 0.
     frame["form_known"] = frame["form_prev"].notna().astype(float)
     frame["form_prev"] = frame["form_prev"].fillna(0.0)
-    return frame.sort_values(["round", "driver"]).reset_index(drop=True)
+    # The caller's index is preserved, not reset: cross_validate rebuilds
+    # form per fold and has to realign the result to its own rows.
+    return frame.sort_values(["round", "driver"])
 
 
 def build_race(year: int, round_no: int, event_format: str) -> pd.DataFrame:
@@ -163,7 +174,7 @@ def build_season(
     if not frames:
         raise RuntimeError(f"no rounds could be built for {year}")
 
-    out = add_form(pd.concat(frames, ignore_index=True))
+    out = add_form(pd.concat(frames, ignore_index=True)).reset_index(drop=True)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(out_path, index=False)
     print(f"\nTOTAL rows: {len(out)}  ->  {out_path}")
@@ -209,13 +220,18 @@ def cross_validate(frame: pd.DataFrame) -> dict:
     an unseen weekend.
     """
     usable = frame.dropna(subset=FEATURES + ["quali_position"]).reset_index(drop=True)
-    x = usable[FEATURES].to_numpy(dtype=float)
     y = usable["quali_gap_pct"].to_numpy(dtype=float)
     groups = usable["round"]
 
     predicted = pd.Series(index=usable.index, dtype=float)
     splitter = GroupKFold(n_splits=groups.nunique())
-    for train_idx, test_idx in splitter.split(x, y, groups):
+    for train_idx, test_idx in splitter.split(usable, y, groups):
+        # Rebuild driver form with the held-out race removed from every
+        # driver's history. Without this a training row from a later round
+        # carries a mean computed partly from the race being predicted.
+        held_out = frozenset(usable.iloc[test_idx]["round"].unique())
+        folded = add_form(usable.drop(columns=["form_prev", "form_known"]), held_out)
+        x = folded.loc[usable.index, FEATURES].to_numpy(dtype=float)
         # Scaling is not cosmetic here. gap_primary has std 0.036 and
         # clean_laps has std 7.5 -- a 200x spread. Ridge penalises every
         # coefficient equally, so an unscaled fit needs a huge coefficient

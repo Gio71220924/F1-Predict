@@ -9,8 +9,6 @@ import pandas as pd
 
 from f1_predict import data
 
-log = logging.getLogger(__name__)
-
 # Preference order for the primary pace signal, cleanest first.
 #
 # Sprint Qualifying is itself a qualifying session -- low fuel, maximum

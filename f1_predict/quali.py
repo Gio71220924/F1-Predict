@@ -6,9 +6,16 @@ from pathlib import Path
 
 import pandas as pd
 
+import numpy as np
+from scipy.stats import spearmanr
+from sklearn.linear_model import RidgeCV
+from sklearn.model_selection import GroupKFold
+
 from f1_predict import sessions
 
 log = logging.getLogger(__name__)
+
+ALPHAS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
 
 FEATURES = [
     "gap_primary",
@@ -164,3 +171,80 @@ def build_season(
 
 if __name__ == "__main__":
     build_season(2026)
+
+
+def rank_within_race(frame: pd.DataFrame, column: str) -> pd.Series:
+    """Turn a predicted gap into a predicted position, race by race.
+
+    Ranking globally would be meaningless: a 0.01 gap at one circuit is not
+    comparable to a 0.01 gap at another, and only the order within a
+    weekend is ever asked for.
+    """
+    return frame.groupby("round")[column].rank(method="first")
+
+
+def score(frame: pd.DataFrame, predicted: pd.Series) -> dict:
+    """Three views of the same ordering, because none alone is enough."""
+    actual = frame["quali_position"].to_numpy(dtype=float)
+    pred = predicted.to_numpy(dtype=float)
+
+    hits = []
+    for round_no in frame["round"].unique():
+        mask = (frame["round"] == round_no).to_numpy()
+        actual_top3 = set(np.argsort(actual[mask])[:3])
+        pred_top3 = set(np.argsort(pred[mask])[:3])
+        hits.append(len(actual_top3 & pred_top3) / 3.0)
+
+    correlation = spearmanr(actual, pred).statistic if len(actual) > 2 else float("nan")
+    return {
+        "position_mae": float(np.mean(np.abs(actual - pred))),
+        "top3_hit": float(np.mean(hits)),
+        "spearman": float(correlation),
+    }
+
+
+def cross_validate(frame: pd.DataFrame) -> dict:
+    """Leave-one-race-out, comparing Ridge against raw practice pace.
+
+    Grouping on round is mandatory: drivers in one weekend share track
+    conditions, so a random split reports a score that cannot reproduce on
+    an unseen weekend.
+    """
+    usable = frame.dropna(subset=FEATURES + ["quali_position"]).reset_index(drop=True)
+    x = usable[FEATURES].to_numpy(dtype=float)
+    y = usable["quali_gap_pct"].to_numpy(dtype=float)
+    groups = usable["round"]
+
+    predicted = pd.Series(index=usable.index, dtype=float)
+    splitter = GroupKFold(n_splits=groups.nunique())
+    for train_idx, test_idx in splitter.split(x, y, groups):
+        # RidgeCV picks alpha inside the training fold only -- tuning on
+        # all the data would leak the held-out race into that choice.
+        regressor = RidgeCV(alphas=ALPHAS).fit(x[train_idx], y[train_idx])
+        predicted.iloc[test_idx] = regressor.predict(x[test_idx])
+
+    usable["pred_model"] = predicted
+    model_rank = rank_within_race(usable, "pred_model")
+    baseline_rank = rank_within_race(usable, "gap_primary")
+
+    out = {
+        "n_rows": int(len(usable)),
+        "n_races": int(groups.nunique()),
+        "model": score(usable, model_rank),
+        "baseline": score(usable, baseline_rank),
+    }
+    for label, is_sprint in (("sprint", 1.0), ("conventional", 0.0)):
+        subset = usable[usable["is_sprint"] == is_sprint]
+        if subset.empty:
+            continue
+        out[label] = {
+            "n_races": int(subset["round"].nunique()),
+            "model": score(subset, model_rank.loc[subset.index]),
+            "baseline": score(subset, baseline_rank.loc[subset.index]),
+        }
+    return out
+
+
+def evaluate(csv_path: str = "data/processed/quali_features.csv") -> dict:
+    frame = pd.read_csv(csv_path)
+    return cross_validate(frame)

@@ -154,3 +154,33 @@ def test_form_uses_only_earlier_rounds():
 
     assert after_ver.loc[2] == pytest.approx(0.010)
     assert after_ver.loc[3] == pytest.approx(0.015)
+
+
+def test_rank_within_race_is_per_race_not_global():
+    frame = pd.DataFrame(
+        {
+            "round": [1, 1, 2, 2],
+            "driver": ["VER", "NOR", "VER", "NOR"],
+            "pred": [0.01, 0.00, 0.00, 0.02],
+        }
+    )
+
+    ranks = quali.rank_within_race(frame, "pred")
+
+    # Round 1: NOR fastest. Round 2: VER fastest. A global ranking would
+    # hand one driver 1 and 2 and the other 3 and 4.
+    assert list(ranks) == [2.0, 1.0, 1.0, 2.0]
+
+
+def test_score_rewards_a_perfect_order():
+    frame = pd.DataFrame({"round": [1, 1, 1], "quali_position": [1.0, 2.0, 3.0]})
+    perfect = pd.Series([1.0, 2.0, 3.0])
+    reversed_order = pd.Series([3.0, 2.0, 1.0])
+
+    good = quali.score(frame, perfect)
+    bad = quali.score(frame, reversed_order)
+
+    assert good["position_mae"] == pytest.approx(0.0)
+    assert good["spearman"] == pytest.approx(1.0)
+    assert bad["position_mae"] > good["position_mae"]
+    assert bad["spearman"] == pytest.approx(-1.0)

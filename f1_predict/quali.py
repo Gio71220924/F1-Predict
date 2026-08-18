@@ -4,12 +4,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import pandas as pd
-
 import numpy as np
+import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.linear_model import RidgeCV
 from sklearn.model_selection import GroupKFold
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from f1_predict import sessions
 
@@ -169,9 +170,6 @@ def build_season(
     return out
 
 
-if __name__ == "__main__":
-    build_season(2026)
-
 
 def rank_within_race(frame: pd.DataFrame, column: str) -> pd.Series:
     """Turn a predicted gap into a predicted position, race by race.
@@ -218,9 +216,19 @@ def cross_validate(frame: pd.DataFrame) -> dict:
     predicted = pd.Series(index=usable.index, dtype=float)
     splitter = GroupKFold(n_splits=groups.nunique())
     for train_idx, test_idx in splitter.split(x, y, groups):
-        # RidgeCV picks alpha inside the training fold only -- tuning on
-        # all the data would leak the held-out race into that choice.
-        regressor = RidgeCV(alphas=ALPHAS).fit(x[train_idx], y[train_idx])
+        # Scaling is not cosmetic here. gap_primary has std 0.036 and
+        # clean_laps has std 7.5 -- a 200x spread. Ridge penalises every
+        # coefficient equally, so an unscaled fit needs a huge coefficient
+        # to use the informative small-scale feature and a tiny one to use
+        # the noisy large-scale feature. The penalty then crushes exactly
+        # the wrong one. Measured: unscaled Ridge missed by 2.69 positions
+        # against the baseline's 1.48.
+        #
+        # Both the scaler and RidgeCV are fitted inside the training fold
+        # only, so the held-out race leaks into neither the centring
+        # constants nor the choice of alpha.
+        regressor = make_pipeline(StandardScaler(), RidgeCV(alphas=ALPHAS))
+        regressor.fit(x[train_idx], y[train_idx])
         predicted.iloc[test_idx] = regressor.predict(x[test_idx])
 
     usable["pred_model"] = predicted
@@ -248,3 +256,7 @@ def cross_validate(frame: pd.DataFrame) -> dict:
 def evaluate(csv_path: str = "data/processed/quali_features.csv") -> dict:
     frame = pd.read_csv(csv_path)
     return cross_validate(frame)
+
+
+if __name__ == "__main__":
+    build_season(2026)

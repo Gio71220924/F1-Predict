@@ -70,12 +70,20 @@ OUTLIER_RATIO = 1.07
 MIN_STINT_LAPS = 3
 
 
-def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+def filter_laps(
+    df: pd.DataFrame, min_stint_laps: int = MIN_STINT_LAPS
+) -> tuple[pd.DataFrame, dict[str, int]]:
     """Reduce a prepared lap frame to representative racing laps.
 
     Order matters: the outlier threshold is a median over laps that already
     passed the validity, flag, and compound filters, so a race full of safety
     car laps cannot drag the threshold upward.
+
+    `min_stint_laps` defaults to MIN_STINT_LAPS, which is what race-pace
+    modelling wants: a one-lap stint says nothing about how a tyre wears.
+    Reading practice pace wants the opposite, because a qualifying
+    simulation IS a one or two lap run -- pass 1 there. Measured on
+    Hungarian FP3 2026, the default discards 47 such stints.
     """
     funnel = {"start": len(df)}
 
@@ -100,7 +108,7 @@ def filter_laps(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     # group, so `transform` gives it NaN and the comparison below drops it. That
     # is the outcome we want: a lap with no stint tells us nothing about wear.
     stint_size = df.groupby(["driver", "stint"])["lap_number"].transform("size")
-    df = df[stint_size >= MIN_STINT_LAPS]
+    df = df[stint_size >= min_stint_laps]
     funnel["stint_length"] = len(df)
 
     return df.reset_index(drop=True), funnel

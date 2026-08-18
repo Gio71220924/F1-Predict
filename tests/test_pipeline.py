@@ -994,3 +994,25 @@ def test_stream_is_a_generator_deferring_work_to_first_iteration():
 
     with pytest.raises(ValueError):
         list(gen)
+
+
+def test_filter_laps_can_keep_short_stints():
+    """Practice sessions need the short stints the race model discards.
+
+    A qualifying simulation is a 1-2 lap run. filter_laps drops those by
+    default, which is right for race-pace modelling and wrong for reading
+    practice pace, so the threshold has to be a parameter.
+    """
+    laps = make_raw_laps(drivers=("VER",), n_laps=20, base=90.0, deg=0.0, fuel=0.0)
+    laps.loc[laps.LapNumber <= 2, "Stint"] = 2.0  # a 2-lap stint
+
+    prepared = data.prepare(laps, make_raw_weather(), round_no=1, event_name="Test")
+
+    default_clean, default_funnel = data.filter_laps(prepared)
+    kept_clean, kept_funnel = data.filter_laps(prepared, min_stint_laps=1)
+
+    assert set(default_clean.stint.unique()) == {1}, "default must still drop it"
+    assert default_funnel["stint_length"] == 18
+
+    assert set(kept_clean.stint.unique()) == {1, 2}, "min_stint_laps=1 must keep it"
+    assert kept_funnel["stint_length"] == 20

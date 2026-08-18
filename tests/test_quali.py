@@ -118,3 +118,39 @@ def test_best_quali_time_takes_the_fastest_segment_run():
     assert best["NOR"] == pytest.approx(77.2)
     assert best["VER"] == pytest.approx(77.7)
     assert best["OCO"] == pytest.approx(79.9), "a Q1 exit must still have a time"
+
+
+def test_form_uses_only_earlier_rounds():
+    """The leakage guard.
+
+    A driver's form before round n must not move when a later round's
+    result changes. If it does, the model is reading the future and every
+    score it reports is fiction.
+    """
+    frame = pd.DataFrame(
+        {
+            "round": [1, 2, 3, 1, 2, 3],
+            "driver": ["VER"] * 3 + ["NOR"] * 3,
+            "quali_gap_pct": [0.010, 0.020, 0.030, 0.000, 0.001, 0.002],
+        }
+    )
+
+    out = quali.add_form(frame)
+    ver = out[out.driver == "VER"].set_index("round")["form_prev"]
+    known = out[out.driver == "VER"].set_index("round")["form_known"]
+
+    # No history before race 1: filled with 0 and flagged, not dropped.
+    assert ver.loc[1] == pytest.approx(0.0)
+    assert known.loc[1] == pytest.approx(0.0)
+    assert known.loc[2] == pytest.approx(1.0)
+    assert ver.loc[2] == pytest.approx(0.010), "round 2 sees only round 1"
+    assert ver.loc[3] == pytest.approx(0.015), "round 3 sees rounds 1 and 2"
+
+    # Change the LAST round; nothing earlier may move.
+    tampered = frame.copy()
+    tampered.loc[2, "quali_gap_pct"] = 0.999
+    after = quali.add_form(tampered)
+    after_ver = after[after.driver == "VER"].set_index("round")["form_prev"]
+
+    assert after_ver.loc[2] == pytest.approx(0.010)
+    assert after_ver.loc[3] == pytest.approx(0.015)

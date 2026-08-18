@@ -53,3 +53,47 @@ def test_is_wet_handles_a_missing_rainfall_column():
     # Some sessions come back without weather at all. Absence of evidence
     # is not evidence of rain -- treat it as dry and let the caller decide.
     assert sessions.is_wet(pd.DataFrame({"AirTemp": [20.0]})) is False
+
+
+def _session_frame(rows):
+    """Minimal clean-lap frame from (driver, stint, lap_seconds) tuples."""
+    return pd.DataFrame(
+        [
+            {"driver": d, "stint": s, "lap_seconds": t, "lap_number": i + 1}
+            for i, (d, s, t) in enumerate(rows)
+        ]
+    )
+
+
+def test_session_gaps_are_fractions_of_the_session_best():
+    laps = _session_frame([
+        ("VER", 1, 90.0), ("VER", 1, 91.0),
+        ("NOR", 1, 92.0), ("NOR", 1, 94.5),
+    ])
+
+    gaps = quali.session_gaps(laps)
+
+    assert gaps["VER"] == pytest.approx(0.0)
+    # NOR's best is 92.0 against a session best of 90.0 -> 2/90
+    assert gaps["NOR"] == pytest.approx(2.0 / 90.0)
+
+
+def test_low_fuel_best_ignores_long_runs():
+    # VER's quick lap is in a 2-lap stint (a qualifying simulation). His
+    # long run is slower and must not be what gets reported.
+    laps = _session_frame([
+        ("VER", 1, 95.0), ("VER", 1, 95.2), ("VER", 1, 95.4),
+        ("VER", 1, 95.6), ("VER", 1, 95.8),
+        ("VER", 2, 90.0), ("VER", 2, 90.4),
+        ("NOR", 1, 91.0), ("NOR", 1, 91.2),
+    ])
+
+    low = quali.low_fuel_best(laps, max_stint=4)
+
+    assert low["VER"] == pytest.approx(0.0)
+    assert low["NOR"] == pytest.approx(1.0 / 90.0)
+
+
+def test_low_fuel_best_is_empty_when_no_short_stints_exist():
+    laps = _session_frame([("VER", 1, 90.0 + i * 0.1) for i in range(6)])
+    assert quali.low_fuel_best(laps, max_stint=4).empty

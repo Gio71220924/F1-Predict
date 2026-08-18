@@ -205,7 +205,15 @@ def _load_training_frame(csv_path: str) -> tuple[pd.DataFrame, int]:
     """
     df = pd.read_csv(csv_path)
 
-    required = ["tyre_age", "laps_remaining", "lap_seconds", "compound", "round", "driver"]
+    # track_temp is in this list because train() fits with_temp=True by
+    # default, so design_matrix needs it non-null to build age_temp_*. The
+    # real 2026 file happens to have none missing; a race whose weather feed
+    # starts late would otherwise fail deep inside LinearRegression rather
+    # than here, where the drop is counted and logged.
+    required = [
+        "tyre_age", "laps_remaining", "lap_seconds",
+        "compound", "round", "driver", "track_temp",
+    ]
     n_before = len(df)
     df = df.dropna(subset=required)
     n_dropped_null = n_before - len(df)

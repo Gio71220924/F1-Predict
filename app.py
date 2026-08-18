@@ -190,13 +190,27 @@ with replay_tab:
     index = st.slider("Lap", 1, len(frames), 1) - 1
     frame = frames[index]
 
+    # A lap can reach here with no tyre age: FastF1 leaves TyreLife unset on
+    # some laps, filter_laps has no reason to drop them (they are perfectly
+    # good laps, just missing one field), and the training path drops them
+    # separately. Show the lap rather than crashing on int(NaN) or skipping
+    # it, which would silently renumber the replay.
+    known_age = pd.notna(frame["tyre_age"])
+
     a, b, c = st.columns(3)
     a.metric("Compound", str(frame["compound"]))
-    b.metric("Tyre age", f"{int(frame['tyre_age'])} laps")
+    b.metric("Tyre age", f"{int(frame['tyre_age'])} laps" if known_age else "not recorded")
     c.metric(
         "Lost vs fresh tyre",
-        f"{degradation_loss(str(frame['compound']), int(frame['tyre_age']), 0.0):.2f} s/lap",
+        f"{degradation_loss(str(frame['compound']), int(frame['tyre_age']), 0.0):.2f} s/lap"
+        if known_age
+        else "n/a",
     )
+    if not known_age:
+        st.caption(
+            "This lap has no recorded tyre age, so the wear estimate is "
+            "unavailable for it. The lap time below is unaffected."
+        )
     shown = pd.DataFrame(frames[: index + 1]).set_index("lap_number")
     st.line_chart(shown["lap_seconds"])
     st.caption(

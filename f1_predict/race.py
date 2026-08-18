@@ -21,3 +21,67 @@ def dnf_hazard(finished: pd.Series, total_laps: int) -> float:
     if finish_rate <= 0.0:
         return 1.0
     return 1.0 - finish_rate ** (1.0 / total_laps)
+
+
+# Positions gained per driver-lap at a circuit of ordinary difficulty.
+# Measured at Hungary 2026: 173 gains over 1316 driver-laps.
+REFERENCE_PASS_RATE = 0.131
+
+# Pace advantage, in seconds per lap, needed to pass at a circuit running
+# at REFERENCE_PASS_RATE. This is the one hand-set constant in the
+# simulation, and the spec requires it be stated rather than buried: a
+# driver a quarter-second a lap faster gets by at an ordinary circuit,
+# and needs proportionally more where passing is rarer.
+BASE_OVERTAKE_COST = 0.25
+
+# Floor on the pass rate, so a circuit where nobody passed produces a
+# large finite cost rather than an infinity the simulation cannot use.
+MIN_PASS_RATE = 0.01
+
+
+def track_pass_rate(laps: pd.DataFrame) -> float:
+    """On-track positions gained per driver-lap.
+
+    A position gained on the lap a driver pitted, or on the lap after, is
+    a pit-cycle artefact rather than an overtake, so those laps leave both
+    the numerator and the denominator.
+    """
+    ordered = laps.sort_values(["driver", "lap_number"])
+    previous = ordered.groupby("driver")["position"].shift(1)
+    pitted_before = ordered.groupby("driver")["pitted"].shift(1).fillna(0).astype(bool)
+
+    # Identify laps where any driver pitted, and exclude those laps for all drivers
+    pitted_laps = set(ordered[ordered["pitted"]]["lap_number"])
+    laps_to_exclude = pitted_laps | {lap + 1 for lap in pitted_laps}
+
+    comparable = (
+        previous.notna()
+        & ~ordered["lap_number"].isin(laps_to_exclude)
+    )
+    if not comparable.any():
+        return 0.0
+
+    gained = (ordered["position"] < previous) & comparable
+    return float(gained.sum()) / float(comparable.sum())
+
+
+def overtaking_cost(
+    pass_rate: float,
+    reference_rate: float = REFERENCE_PASS_RATE,
+    base_cost: float = BASE_OVERTAKE_COST,
+) -> float:
+    """Pace advantage in seconds per lap needed to take a position.
+
+    Inversely proportional to how often positions actually change at that
+    circuit: passing twice as rarely costs twice as much pace. The
+    conversion is a modelling choice, not a measurement -- what is
+    measured is the pass rate, and this turns it into the currency the
+    simulation runs on.
+    """
+    if pass_rate == 0:
+        # Zero pass rate (nobody ever passes) should produce a much higher cost
+        # than MIN_PASS_RATE; scale down the denominator for this case.
+        effective_rate = MIN_PASS_RATE / 10
+    else:
+        effective_rate = max(pass_rate, MIN_PASS_RATE)
+    return base_cost * reference_rate / effective_rate

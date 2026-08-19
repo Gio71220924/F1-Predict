@@ -1,6 +1,9 @@
 """Simulate a race from the grid and count how often each driver wins."""
 from __future__ import annotations
 
+import logging
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -238,25 +241,70 @@ def _hit(position: float, outcome: str) -> float:
     return float(position <= POINTS)
 
 
+def _scheduled_laps(year: int, round_no: int, fallback: int) -> int:
+    """The race's originally scheduled lap count, known before it starts.
+
+    Reads FastF1's own `Session.total_laps`, sourced from the timing API's
+    'TotalLaps' field: the intended race distance, not a tally of how many
+    laps were actually completed. The two normally agree, and diverge only
+    when a race is red-flagged short -- exactly the case where counting
+    completed laps would read the outcome instead of the plan.
+
+    `fallback` (the held-out round's own completed-lap count, i.e. the
+    pre-fix behaviour) is used only if FastF1 has no scheduled figure for
+    this session, which `total_laps` can legitimately be (None). That
+    fallback is itself a proxy for the scheduled distance, exact except in
+    the one case this function exists to avoid.
+    """
+    import fastf1
+
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    session = fastf1.get_session(year, round_no, "R")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(laps=True, telemetry=False, weather=False, messages=False)
+    return int(session.total_laps) if session.total_laps is not None else fallback
+
+
 def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
     """Leave-one-race-out Brier scores, simulation against grid baseline.
 
-    Every input the simulator sees for a held-out race must be knowable
-    before that race starts, or the score measures memorisation instead of
-    forecasting. Four inputs go into `probabilities` per round, and each is
-    held to that standard separately:
+    Every input to `probabilities`, and whether it is held to the
+    leave-one-race-out standard -- knowable before the held-out race
+    starts, or explicitly flagged where it is not:
 
-    - `grid` is the real starting order -- known pre-race by definition.
-    - `dnf_hazard` is fit on `train`, every round EXCEPT the held-out one.
-    - `pace` comes from that weekend's own practice running (the primary
-      dry session, picked the same way the qualifying subsystem picks it),
-      never from the held-out race's own laps. A round with no dry
-      practice session is skipped rather than falling back to race pace.
-    - `overtake_cost` is the median of every OTHER round's own measured
-      on-track passing rate. The held-out circuit is raced once this
-      season, so it has no earlier example of itself to measure ahead of
-      time; its own passing record is only ever used as a training signal
-      for scoring some OTHER round.
+    - `grid`: the held-out race's own real starting order. Legitimately
+      pre-race -- the grid is set before lights out, not an outcome of it.
+    - `pace`: median clean lap from that weekend's OWN practice running,
+      picked the same way the qualifying subsystem picks a primary
+      session. Never touches the held-out race's own laps. A round with
+      no dry practice session is skipped rather than falling back to
+      race pace.
+    - `overtake_cost`: the median of every OTHER round's own measured
+      on-track passing rate (`own_cost`, computed independently of
+      practice availability). The held-out round's own passing record is
+      used only as a training signal for scoring some OTHER round, never
+      for itself.
+    - `dnf_per_lap`: `dnf_hazard` fit on `train`, every round except the
+      held-out one.
+    - `total_laps`: the race's originally SCHEDULED distance (see
+      `_scheduled_laps`), not a count of completed laps -- so a
+      red-flagged, shortened race does not leak how far it actually got.
+    - `coef`, `noise_s`: **NOT held to this standard.** `model.load()`
+      returns a tyre-degradation model fit once across all eleven
+      rounds, including whichever round is currently held out, so both
+      the degradation coefficients and the noise scale carry information
+      from the race being scored. This is a known, deliberately
+      undisturbed leak: refitting the tyre model inside every fold would
+      be a substantial change to another subsystem's artifact, and the
+      simulator already loses to the grid baseline with this leak still
+      helping it, so removing it could only widen the loss. The
+      conclusion is robust to the defect; fixing it would cost real work
+      to move nothing. Left in and named here rather than fixed quietly
+      or left unnamed.
+    - `pit_loss_s` (20.0) and `seed` (the round number) are constants,
+      not data-derived, and carry nothing to leak.
 
     Grouping on race is also the more familiar guard: drivers in one race
     share its conditions, so a random split reports a score that cannot
@@ -328,7 +376,8 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
         n_dropped += len(test) - len(grid)
 
         race_laps = laps[laps["round"] == round_no]
-        total_laps = int(race_laps["lap_number"].max())
+        completed_laps = int(race_laps["lap_number"].max())
+        total_laps = _scheduled_laps(year, int(round_no), fallback=completed_laps)
 
         # Median over every round except this one -- see the docstring.
         training_costs = [

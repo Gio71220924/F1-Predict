@@ -67,6 +67,20 @@ def test_track_pass_rate_ignores_positions_gained_through_the_pits():
     assert race.track_pass_rate(laps) == 0.0
 
 
+def test_track_pass_rate_excludes_lap_after_pit():
+    # Driver A pits on lap 2, comes out faster, and gains a position on lap 3.
+    # That gain is a pit-cycle artefact (recovering from the pit stop), not an overtake.
+    laps = _position_frame([
+        ("A", 1, 2.0, False), ("B", 1, 1.0, False),
+        ("A", 2, 3.0, True),  ("B", 2, 1.0, False),  # A pits, drops to 3rd
+        ("A", 3, 1.0, False), ("B", 3, 2.0, False),  # A comes out faster and gains to 1st
+    ])
+
+    # Lap 3 should be excluded (day after pit), so only lap 1 would be comparable
+    # but lap 1 has no previous lap. Result: 0 comparable laps.
+    assert race.track_pass_rate(laps) == 0.0
+
+
 def test_overtaking_cost_rises_as_passing_gets_rarer():
     easy = race.overtaking_cost(0.20)
     hard = race.overtaking_cost(0.02)
@@ -79,10 +93,12 @@ def test_overtaking_cost_rises_as_passing_gets_rarer():
 
 
 def test_overtaking_cost_is_finite_when_nobody_ever_passes():
-    # Monaco can plausibly produce a zero pass rate. The cost must be a
-    # large finite number the simulation can compare against, not an
-    # infinity or a division by zero.
+    # Monaco can plausibly produce a zero pass rate. The floor exists so
+    # the cost stays a number the simulation can compare against, not to
+    # rank zero above the floor -- below MIN_PASS_RATE every circuit is
+    # simply "as hard as we are willing to model".
     cost = race.overtaking_cost(0.0)
 
     assert np.isfinite(cost)
-    assert cost > race.overtaking_cost(0.01)
+    assert cost == pytest.approx(race.overtaking_cost(race.MIN_PASS_RATE))
+    assert cost > race.overtaking_cost(0.1)

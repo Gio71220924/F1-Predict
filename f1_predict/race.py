@@ -24,8 +24,9 @@ def dnf_hazard(finished: pd.Series, total_laps: int) -> float:
 
 
 # Positions gained per driver-lap at a circuit of ordinary difficulty.
-# Measured at Hungary 2026: 173 gains over 1316 driver-laps.
-REFERENCE_PASS_RATE = 0.131
+# Measured at Hungary 2026 using track_pass_rate (0.0336), which is stricter than
+# an earlier looser per-driver-only measurement (0.131).
+REFERENCE_PASS_RATE = 0.0336
 
 # Pace advantage, in seconds per lap, needed to pass at a circuit running
 # at REFERENCE_PASS_RATE. This is the one hand-set constant in the
@@ -42,13 +43,13 @@ MIN_PASS_RATE = 0.01
 def track_pass_rate(laps: pd.DataFrame) -> float:
     """On-track positions gained per driver-lap.
 
-    A position gained on the lap a driver pitted, or on the lap after, is
-    a pit-cycle artefact rather than an overtake, so those laps leave both
-    the numerator and the denominator.
+    When any driver pits on lap N, that lap and N+1 are excluded for every
+    driver, because a position gained while a rival is in the pits is not an
+    overtake -- the rival was slower due to pitting, not slower due to pace.
+    This ensures the measured pass rate reflects on-track speed, not pit timing.
     """
     ordered = laps.sort_values(["driver", "lap_number"])
     previous = ordered.groupby("driver")["position"].shift(1)
-    pitted_before = ordered.groupby("driver")["pitted"].shift(1).fillna(0).astype(bool)
 
     # Identify laps where any driver pitted, and exclude those laps for all drivers
     pitted_laps = set(ordered[ordered["pitted"]]["lap_number"])
@@ -78,10 +79,4 @@ def overtaking_cost(
     measured is the pass rate, and this turns it into the currency the
     simulation runs on.
     """
-    if pass_rate == 0:
-        # Zero pass rate (nobody ever passes) should produce a much higher cost
-        # than MIN_PASS_RATE; scale down the denominator for this case.
-        effective_rate = MIN_PASS_RATE / 10
-    else:
-        effective_rate = max(pass_rate, MIN_PASS_RATE)
-    return base_cost * reference_rate / effective_rate
+    return base_cost * reference_rate / max(pass_rate, MIN_PASS_RATE)

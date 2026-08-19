@@ -241,10 +241,29 @@ def _hit(position: float, outcome: str) -> float:
 def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
     """Leave-one-race-out Brier scores, simulation against grid baseline.
 
-    Grouped on race for the reason every earlier subsystem was: drivers in
-    one race share its conditions, so a random split reports a score that
-    cannot reproduce on an unseen race.
+    Every input the simulator sees for a held-out race must be knowable
+    before that race starts, or the score measures memorisation instead of
+    forecasting. Four inputs go into `probabilities` per round, and each is
+    held to that standard separately:
+
+    - `grid` is the real starting order -- known pre-race by definition.
+    - `dnf_hazard` is fit on `train`, every round EXCEPT the held-out one.
+    - `pace` comes from that weekend's own practice running (the primary
+      dry session, picked the same way the qualifying subsystem picks it),
+      never from the held-out race's own laps. A round with no dry
+      practice session is skipped rather than falling back to race pace.
+    - `overtake_cost` is the median of every OTHER round's own measured
+      on-track passing rate. The held-out circuit is raced once this
+      season, so it has no earlier example of itself to measure ahead of
+      time; its own passing record is only ever used as a training signal
+      for scoring some OTHER round.
+
+    Grouping on race is also the more familiar guard: drivers in one race
+    share its conditions, so a random split reports a score that cannot
+    reproduce on an unseen race.
     """
+    import fastf1
+
     from f1_predict import model, sessions
 
     fitted = model.load()
@@ -259,30 +278,70 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
         frames.append(frame)
     results = pd.concat(frames, ignore_index=True)
 
+    fastf1.Cache.enable_cache("cache")
+    schedule = fastf1.get_event_schedule(year, include_testing=False)
+    event_format = schedule.set_index("RoundNumber")["EventFormat"]
+
+    # Each round's own on-track passing rate, measured independently of
+    # practice availability. Used below only as a TRAINING input for
+    # scoring some OTHER round -- never for a round's own held-out score.
+    own_cost = {
+        int(round_no): overtaking_cost(
+            track_pass_rate(sessions.race_positions(year, int(round_no)))
+        )
+        for round_no in sorted(results["round"].unique())
+    }
+
     predicted = {outcome: [] for outcome in OUTCOMES}
     baseline = {outcome: [] for outcome in OUTCOMES}
     actual = {outcome: [] for outcome in OUTCOMES}
+    n_dropped = 0
+    skipped_rounds = []
 
     for round_no in sorted(results["round"].unique()):
         train = results[results["round"] != round_no]
         test = results[results["round"] == round_no].set_index("driver")
         table = grid_baseline(train)
 
-        race_laps = laps[laps["round"] == round_no]
-        pace = race_laps.groupby("driver")["lap_seconds"].median()
+        fmt = str(event_format.get(int(round_no), ""))
+        try:
+            available = sessions.practice_sessions(fmt)
+            practice, wet = {}, set()
+            for name in available:
+                session_laps, session_wet = sessions.load_session(
+                    year, int(round_no), name
+                )
+                practice[name] = session_laps
+                if session_wet:
+                    wet.add(name)
+            primary = sessions.pick_primary(available, wet)
+        except Exception as exc:  # noqa: BLE001 - one bad round must not stop the season
+            skipped_rounds.append(
+                {"round": int(round_no), "reason": f"{type(exc).__name__}: {exc}"}
+            )
+            continue
+
+        pace = practice[primary].groupby("driver")["lap_seconds"].median()
         grid = test["grid"].reindex(pace.index).dropna()
         grid = grid[grid > 0]
         pace = pace.reindex(grid.index)
+        n_dropped += len(test) - len(grid)
+
+        race_laps = laps[laps["round"] == round_no]
         total_laps = int(race_laps["lap_number"].max())
+
+        # Median over every round except this one -- see the docstring.
+        training_costs = [
+            cost for other_round, cost in own_cost.items() if other_round != round_no
+        ]
+        overtake_cost = float(np.median(training_costs))
 
         simulated = probabilities(
             n_runs=n_runs, seed=int(round_no),
             pace=pace, grid=grid, coef=coef,
             total_laps=total_laps, pit_loss_s=20.0,
             pit_lap=total_laps // 2,
-            overtake_cost=overtaking_cost(
-                track_pass_rate(sessions.race_positions(year, int(round_no)))
-            ),
+            overtake_cost=overtake_cost,
             dnf_per_lap=dnf_hazard(train["finished"], total_laps),
             # MAE understates a normal's standard deviation by roughly
             # 25%, so this is a slight under-dispersion on top of an
@@ -301,7 +360,9 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
 
     return {
         "n_rows": len(actual["p_win"]),
-        "n_races": int(results["round"].nunique()),
+        "n_races": int(results["round"].nunique()) - len(skipped_rounds),
+        "n_dropped": n_dropped,
+        "skipped_rounds": skipped_rounds,
         "model": {
             outcome: brier(pd.Series(predicted[outcome]), pd.Series(actual[outcome]))
             for outcome in OUTCOMES

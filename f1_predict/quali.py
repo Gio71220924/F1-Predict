@@ -212,8 +212,15 @@ def score(frame: pd.DataFrame, predicted: pd.Series) -> dict:
     }
 
 
-def cross_validate(frame: pd.DataFrame) -> dict:
-    """Leave-one-race-out, comparing Ridge against raw practice pace.
+def predictions(frame: pd.DataFrame) -> pd.DataFrame:
+    """One row per driver, with the leave-one-race-out predicted order.
+
+    `cross_validate` scores this table; the app reads a saved copy of it.
+    Both predicted orders are attached as positions rather than raw gaps,
+    because a gap is only meaningful next to the other gaps of its own
+    weekend.
+
+    Comparing Ridge against raw practice pace.
 
     Grouping on round is mandatory: drivers in one weekend share track
     conditions, so a random split reports a score that cannot reproduce on
@@ -248,12 +255,20 @@ def cross_validate(frame: pd.DataFrame) -> dict:
         predicted.iloc[test_idx] = regressor.predict(x[test_idx])
 
     usable["pred_model"] = predicted
-    model_rank = rank_within_race(usable, "pred_model")
-    baseline_rank = rank_within_race(usable, "gap_primary")
+    usable["pred_position"] = rank_within_race(usable, "pred_model")
+    usable["baseline_position"] = rank_within_race(usable, "gap_primary")
+    return usable
+
+
+def cross_validate(frame: pd.DataFrame) -> dict:
+    """Position error, top-3 hit rate and Spearman, model against baseline."""
+    usable = predictions(frame)
+    model_rank = usable["pred_position"]
+    baseline_rank = usable["baseline_position"]
 
     out = {
         "n_rows": int(len(usable)),
-        "n_races": int(groups.nunique()),
+        "n_races": int(usable["round"].nunique()),
         "model": score(usable, model_rank),
         "baseline": score(usable, baseline_rank),
     }

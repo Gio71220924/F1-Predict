@@ -1,8 +1,10 @@
-"""Streamlit UI for the 2026 tyre degradation model."""
+"""Streamlit UI for the 2026 tyre, qualifying and race-outcome models."""
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
-from f1_predict import model, replay, strategy
+from f1_predict import export, model, quali, race, replay, strategy
 
 LAPS_CSV = "data/processed/laps.csv"
 
@@ -25,7 +27,7 @@ PIT_LOSS_S = {
     "Monaco Grand Prix": (21.55, 19),
 }
 
-st.set_page_config(page_title="F1 2026 Tyre Strategy", layout="wide")
+st.set_page_config(page_title="F1 2026 Predictor", layout="wide")
 
 
 @st.cache_data
@@ -38,6 +40,18 @@ def load_model():
     return model.load()
 
 
+@st.cache_data
+def load_predictions(path):
+    """A prediction table written by `f1_predict.export`, or None.
+
+    Returning None rather than raising lets each tab name the command that
+    rebuilds its own table. Neither table is computable inside a page load:
+    the race simulation alone loads every weekend's practice sessions and
+    runs two thousand simulations per race.
+    """
+    return pd.read_csv(path) if Path(path).exists() else None
+
+
 laps = load_laps()
 fitted = load_model()
 coef = fitted["coef"]
@@ -47,6 +61,7 @@ temp_mean = fitted["track_temp_mean"]
 # data rather than a hardcoded table, so they cannot drift away from it.
 LAPS_BY_EVENT = laps.groupby("event_name")["lap_number"].max().astype(int).to_dict()
 ROUND_BY_EVENT = laps.groupby("event_name")["round"].first().astype(int).to_dict()
+EVENT_BY_ROUND = {r: e for e, r in ROUND_BY_EVENT.items()}
 TEMP_LO = float(laps["track_temp"].min())
 TEMP_HI = float(laps["track_temp"].max())
 
@@ -69,8 +84,8 @@ def degradation_loss(compound, age, temp_delta):
     )
 
 
-degradation, strategy_tab, replay_tab, card = st.tabs(
-    ["Degradation", "Strategy", "Replay", "Model card"]
+degradation, strategy_tab, quali_tab, odds_tab, replay_tab, card = st.tabs(
+    ["Degradation", "Strategy", "Qualifying", "Race odds", "Replay", "Model card"]
 )
 
 with degradation:
@@ -172,6 +187,160 @@ with strategy_tab:
         "Moving the temperature re-solves the optimum, and which way it shifts "
         "depends on which compound carries the larger fitted temperature term, so "
         "there is no universal rule that a hotter track means stopping earlier."
+    )
+
+with quali_tab:
+    st.header("Predicted qualifying order")
+    predicted_quali = load_predictions(export.QUALI_OUT)
+    if predicted_quali is None:
+        st.error(
+            f"No {export.QUALI_OUT} yet. Build it with "
+            f"`python -m f1_predict.export`."
+        )
+        st.stop()
+
+    # Scored with the same function that produced the verdict, so this
+    # headline cannot drift away from what the model actually did.
+    model_scores = quali.score(predicted_quali, predicted_quali["pred_position"])
+    base_scores = quali.score(predicted_quali, predicted_quali["baseline_position"])
+
+    a, b, c = st.columns(3)
+    a.metric(
+        "Model error",
+        f"{model_scores['position_mae']:.2f} places",
+        f"{model_scores['position_mae'] - base_scores['position_mae']:+.2f} vs baseline",
+        delta_color="inverse",
+    )
+    b.metric("Baseline: raw practice pace", f"{base_scores['position_mae']:.2f} places")
+    c.metric(
+        "Top-3 hit rate",
+        f"{model_scores['top3_hit']:.0%}",
+        f"baseline {base_scores['top3_hit']:.0%}",
+    )
+    st.warning(
+        f"**The model loses.** Ranking drivers by their raw fastest practice lap "
+        f"misses by {base_scores['position_mae']:.2f} places; the Ridge model built "
+        f"on top of that pace misses by {model_scores['position_mae']:.2f}. "
+        f"Everything below is shown so you can see where it goes wrong, not "
+        f"because it works."
+    )
+
+    quali_rounds = sorted(predicted_quali["round"].unique())
+    quali_event = st.selectbox(
+        "Race",
+        [EVENT_BY_ROUND.get(r, f"Round {r}") for r in quali_rounds],
+        key="quali_event",
+    )
+    one = predicted_quali[
+        predicted_quali["round"] == ROUND_BY_EVENT.get(quali_event, -1)
+    ].copy()
+    one["miss"] = one["pred_position"] - one["quali_position"]
+    table = one.sort_values("quali_position")[
+        ["driver", "quali_position", "pred_position", "baseline_position", "miss"]
+    ]
+    table.columns = ["Driver", "Actual", "Predicted", "Baseline", "Miss"]
+    st.dataframe(table.set_index("Driver"), width="stretch")
+
+    session_used = one["primary_session"].iloc[0] if len(one) else "?"
+    st.caption(
+        f"Pace for this weekend was read from {session_used}, chosen by "
+        f"`sessions.pick_primary`: sprint qualifying if the weekend has one, "
+        f"otherwise the latest dry practice session. Predictions are "
+        f"leave-one-race-out, so this weekend's own qualifying never reached "
+        f"the model that predicted it. `Miss` is places out, positive meaning "
+        f"the model expected the driver further back than they qualified."
+    )
+    if one["imputed"].sum():
+        st.info(
+            f"{int(one['imputed'].sum())} driver(s) set no usable lap in "
+            f"{session_used} and fell back to their FP1 gap, or to the field's "
+            f"worst gap if they set nothing at all."
+        )
+    st.caption(
+        f"{predicted_quali['round'].nunique()} of 11 rounds appear here. A "
+        f"weekend whose practice ran wet has no dry pace comparable to a dry "
+        f"qualifying, and is skipped rather than guessed at."
+    )
+
+with odds_tab:
+    st.header("Race outcome probabilities")
+    odds = load_predictions(export.RACE_OUT)
+    if odds is None:
+        st.error(
+            f"No {export.RACE_OUT} yet. Build it with "
+            f"`python -m f1_predict.export` -- it takes several minutes."
+        )
+        st.stop()
+
+    model_brier = {o: race.brier(odds[o], odds[f"actual_{o}"]) for o in race.OUTCOMES}
+    base_brier = {
+        o: race.brier(odds[f"base_{o}"], odds[f"actual_{o}"]) for o in race.OUTCOMES
+    }
+
+    labels = {"p_win": "Win", "p_podium": "Podium", "p_points": "Points"}
+    for column, outcome in zip(st.columns(3), race.OUTCOMES):
+        column.metric(
+            f"Brier: {labels[outcome]}",
+            f"{model_brier[outcome]:.4f}",
+            f"{model_brier[outcome] - base_brier[outcome]:+.4f} vs grid table",
+            delta_color="inverse",
+        )
+    st.warning(
+        "**The simulation loses on all three.** A one-column lookup table -- for "
+        "each grid slot, how often drivers starting there won, finished on the "
+        "podium and scored -- beats it every time. Brier is a squared error on "
+        "the stated probability: lower is better, and a confident wrong answer "
+        "is punished hardest."
+    )
+
+    odds_event = st.selectbox(
+        "Race", sorted(odds["event_name"].unique()), key="odds_event"
+    )
+    one = odds[odds["event_name"] == odds_event].sort_values("grid")
+
+    chart = one.set_index("driver")[["p_win", "base_p_win"]]
+    chart.columns = ["Simulation", "Grid table"]
+    st.bar_chart(chart)
+    st.caption("P(win) per driver, simulation against the grid-slot baseline.")
+
+    shown = one[
+        ["driver", "grid", "position", "p_win", "p_podium", "p_points",
+         "base_p_win", "base_p_podium", "base_p_points"]
+    ].copy()
+    shown.columns = [
+        "Driver", "Grid", "Finished", "P(win)", "P(podium)", "P(points)",
+        "Grid P(win)", "Grid P(podium)", "Grid P(points)",
+    ]
+    percent = [c for c in shown.columns if "P(" in c]
+    st.dataframe(
+        shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
+        width="stretch",
+    )
+
+    winner = one.loc[one["position"] == 1.0, "driver"]
+    if len(winner):
+        given = float(one.loc[one["driver"] == winner.iloc[0], "p_win"].iloc[0])
+        st.info(f"{winner.iloc[0]} won this race. The simulation gave them {given:.1%}.")
+
+    st.caption(
+        f"Leave-one-race-out: this race's own laps, passing record and "
+        f"reliability never reached the simulation that predicted it. Pace comes "
+        f"from the weekend's practice, the tyre model is refitted without this "
+        f"round, and the race runs its originally scheduled distance so a red "
+        f"flag cannot leak backwards. "
+        f"{int(one['n_excluded_total'].iloc[0])} of "
+        f"{int(one['n_rows_total'].iloc[0])} season entries are excluded: drivers "
+        f"with no grid slot or no practice pace, plus every entry from a skipped "
+        f"round."
+    )
+    if str(one["skipped_rounds"].iloc[0]).strip():
+        st.caption(f"Skipped rounds -- {one['skipped_rounds'].iloc[0]}")
+    st.caption(
+        "Safety cars are not modelled at all, and they are the single largest "
+        "source of race randomness. The simulation is therefore overconfident by "
+        "construction: its probabilities sit closer to 0 and 1 than reality "
+        "warrants. Eleven races contain eleven wins, so P(win) is the headline "
+        "number with the least evidence behind it."
     )
 
 with replay_tab:

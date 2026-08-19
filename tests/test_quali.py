@@ -184,3 +184,64 @@ def test_score_rewards_a_perfect_order():
     assert good["spearman"] == pytest.approx(1.0)
     assert bad["position_mae"] > good["position_mae"]
     assert bad["spearman"] == pytest.approx(-1.0)
+
+
+def _cv_frame():
+    """Three rounds of four drivers, enough for leave-one-race-out."""
+    rows = []
+    for round_no in (1, 2, 3):
+        for slot, driver in enumerate(["VER", "NOR", "LEC", "HAM"], start=1):
+            gap = 0.001 * slot
+            rows.append(
+                {
+                    "round": round_no,
+                    "driver": driver,
+                    "primary_session": "FP3",
+                    "quali_position": float(slot),
+                    "quali_gap_pct": gap,
+                    "gap_primary": gap,
+                    "gap_fp1": gap,
+                    "gap_lowfuel_fp2": gap,
+                    "fp2_available": 1.0,
+                    "clean_laps": 20.0,
+                    "form_prev": 0.0,
+                    "form_known": 0.0,
+                    "is_sprint": 0.0,
+                    "imputed": 0.0,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_predictions_carries_the_columns_the_app_reads():
+    """The app selects columns by name, so a rename must fail here.
+
+    Both the exporter and the Streamlit tab read these strings. Nothing
+    else connects them, so without this test a rename would only surface
+    as a KeyError in the running app.
+    """
+    out = quali.predictions(_cv_frame())
+
+    for column in [
+        "round", "driver", "primary_session", "quali_position",
+        "pred_position", "baseline_position", "gap_primary", "form_prev",
+        "form_known", "imputed",
+    ]:
+        assert column in out.columns, column
+    assert len(out) == 12
+
+
+def test_cross_validate_scores_exactly_what_predictions_returns():
+    """cross_validate must be predictions plus scoring, nothing more.
+
+    They were one function until the app needed the per-driver table. If
+    they ever diverge, the app shows one set of numbers and the model card
+    another, with no way to tell which is real.
+    """
+    frame = _cv_frame()
+    out = quali.predictions(frame)
+    scores = quali.cross_validate(frame)
+
+    assert scores["model"] == quali.score(out, out["pred_position"])
+    assert scores["baseline"] == quali.score(out, out["baseline_position"])
+    assert scores["n_rows"] == len(out)

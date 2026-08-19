@@ -267,8 +267,13 @@ def _scheduled_laps(year: int, round_no: int, fallback: int) -> int:
     return int(session.total_laps) if session.total_laps is not None else fallback
 
 
-def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
-    """Leave-one-race-out Brier scores, simulation against grid baseline.
+def predictions(year: int = 2026, n_runs: int = 2000) -> tuple[pd.DataFrame, dict]:
+    """One row per scored driver, leave-one-race-out.
+
+    Returns the per-driver table and a dict describing what was excluded.
+    `evaluate` scores this table; the app reads a saved copy of it. The
+    leave-one-race-out accounting lives here because this is where
+    `probabilities` is called.
 
     Every input to `probabilities`, and whether it is held to the
     leave-one-race-out standard -- knowable before the held-out race
@@ -341,9 +346,8 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
         for round_no in sorted(results["round"].unique())
     }
 
-    predicted = {outcome: [] for outcome in OUTCOMES}
-    baseline = {outcome: [] for outcome in OUTCOMES}
-    actual = {outcome: [] for outcome in OUTCOMES}
+    event_by_round = laps.groupby("round")["event_name"].first()
+    rows = []
     n_dropped = 0
     skipped_rounds = []
 
@@ -409,31 +413,53 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
         for driver in grid.index:
             position = float(test.loc[driver, "position"])
             slot_rates = baseline_for(table, float(grid[driver]))
+            row = {
+                "round": int(round_no),
+                "event_name": str(event_by_round.get(round_no, "")),
+                "driver": driver,
+                "grid": float(grid[driver]),
+                "position": position,
+            }
             for outcome in OUTCOMES:
-                actual[outcome].append(_hit(position, outcome))
-                predicted[outcome].append(float(simulated.loc[driver, outcome]))
-                baseline[outcome].append(float(slot_rates[outcome]))
+                row[outcome] = float(simulated.loc[driver, outcome])
+                row[f"base_{outcome}"] = float(slot_rates[outcome])
+                row[f"actual_{outcome}"] = _hit(position, outcome)
+            rows.append(row)
 
+    # A season where every round was skipped would otherwise fail later
+    # with a KeyError on a column that was never built.
+    if not rows:
+        raise RuntimeError(f"no round could be scored: {skipped_rounds}")
+
+    frame = pd.DataFrame(rows)
     # Report the whole exclusion, not just the part this loop caused.
     # `n_dropped` alone counts drivers missing from a scored round; the
     # rows belonging to a skipped round never reach that counter at all,
     # so a caller reading only this dict would put the exclusion at 3%
     # when it is 12%.
-    scored = len(actual["p_win"])
-    return {
-        "n_rows": scored,
+    meta = {
+        "n_rows": int(len(frame)),
         "n_rows_total": int(len(results)),
         "n_races": int(results["round"].nunique()) - len(skipped_rounds),
         "n_races_total": int(results["round"].nunique()),
         "n_dropped": n_dropped,
-        "n_excluded_total": int(len(results)) - scored,
+        "n_excluded_total": int(len(results)) - int(len(frame)),
         "skipped_rounds": skipped_rounds,
+    }
+    return frame, meta
+
+
+def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
+    """Brier scores for the simulation and the grid baseline it must beat."""
+    frame, meta = predictions(year, n_runs)
+    return {
+        **meta,
         "model": {
-            outcome: brier(pd.Series(predicted[outcome]), pd.Series(actual[outcome]))
+            outcome: brier(frame[outcome], frame[f"actual_{outcome}"])
             for outcome in OUTCOMES
         },
         "baseline": {
-            outcome: brier(pd.Series(baseline[outcome]), pd.Series(actual[outcome]))
+            outcome: brier(frame[f"base_{outcome}"], frame[f"actual_{outcome}"])
             for outcome in OUTCOMES
         },
     }

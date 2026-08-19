@@ -149,3 +149,38 @@ def simulate_once(
     return pd.Series(
         {driver: float(i + 1) for i, driver in enumerate(classified)}
     ).reindex(pace.index)
+
+
+PODIUM = 3
+POINTS = 10
+
+
+def probabilities(n_runs: int = 10000, seed: int = 0, **kwargs) -> pd.DataFrame:
+    """Run the race many times and count how often each outcome happens.
+
+    This is the whole reason for simulating rather than classifying: the
+    2026 season contains eleven wins, so a model learning P(win) directly
+    learns from eleven examples. Here P(win) is counted from `n_runs`
+    simulated races instead, and what gets fitted from real data is lap
+    time, which has thousands of observations.
+    """
+    rng = np.random.default_rng(seed)
+    drivers = kwargs["pace"].index
+
+    wins = pd.Series(0.0, index=drivers)
+    podiums = pd.Series(0.0, index=drivers)
+    points = pd.Series(0.0, index=drivers)
+
+    for _ in range(n_runs):
+        finish = simulate_once(rng=rng, **kwargs)
+        wins += (finish == 1.0).astype(float)
+        podiums += (finish <= PODIUM).astype(float)
+        points += (finish <= POINTS).astype(float)
+
+    return pd.DataFrame(
+        {
+            "p_win": wins / n_runs,
+            "p_podium": podiums / n_runs,
+            "p_points": points / n_runs,
+        }
+    )

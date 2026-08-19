@@ -155,3 +155,47 @@ def test_every_driver_gets_exactly_one_finishing_position():
 
     assert sorted(finish.values) == [1.0, 2.0, 3.0]
     assert set(finish.index) == {"VER", "NOR", "LEC"}
+
+
+def test_probabilities_sum_to_one_across_drivers():
+    pace = pd.Series({"VER": 89.0, "NOR": 90.0, "LEC": 91.0})
+    grid = pd.Series({"VER": 1.0, "NOR": 2.0, "LEC": 3.0})
+
+    out = race.probabilities(
+        n_runs=200, seed=0, pace=pace, grid=grid, coef=FLAT_COEF,
+        total_laps=20, pit_loss_s=20.0, pit_lap=10,
+        overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.3,
+    )
+
+    # Exactly one driver wins each run.
+    assert out["p_win"].sum() == pytest.approx(1.0)
+    # Three drivers, so everyone is on the podium every time.
+    assert out["p_podium"].sum() == pytest.approx(3.0)
+    assert set(out.columns) == {"p_win", "p_podium", "p_points"}
+
+
+def test_the_faster_car_wins_more_often():
+    pace = pd.Series({"VER": 89.0, "NOR": 90.0})
+    grid = pd.Series({"VER": 1.0, "NOR": 2.0})
+
+    out = race.probabilities(
+        n_runs=200, seed=0, pace=pace, grid=grid, coef=FLAT_COEF,
+        total_laps=20, pit_loss_s=20.0, pit_lap=10,
+        overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.5,
+    )
+
+    assert out.loc["VER", "p_win"] > out.loc["NOR", "p_win"]
+
+
+def test_probabilities_are_reproducible_from_a_seed():
+    args = dict(
+        pace=pd.Series({"VER": 89.0, "NOR": 90.0}),
+        grid=pd.Series({"VER": 1.0, "NOR": 2.0}),
+        coef=FLAT_COEF, total_laps=20, pit_loss_s=20.0, pit_lap=10,
+        overtake_cost=0.25, dnf_per_lap=0.02, noise_s=0.5,
+    )
+
+    first = race.probabilities(n_runs=100, seed=7, **args)
+    second = race.probabilities(n_runs=100, seed=7, **args)
+
+    pd.testing.assert_frame_equal(first, second)

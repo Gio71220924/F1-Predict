@@ -291,6 +291,10 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
     - `total_laps`: the race's originally SCHEDULED distance (see
       `_scheduled_laps`), not a count of completed laps -- so a
       red-flagged, shortened race does not leak how far it actually got.
+    - `pit_lap`: derived as `total_laps // 2`, so it inherits that
+      entry's provenance and introduces nothing of its own. Every
+      simulated driver stops on the same lap; no strategy reacts to a
+      rival.
     - `coef`, `noise_s`: **NOT held to this standard.** `model.load()`
       returns a tyre-degradation model fit once across all eleven
       rounds, including whichever round is currently held out, so both
@@ -303,8 +307,8 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
       conclusion is robust to the defect; fixing it would cost real work
       to move nothing. Left in and named here rather than fixed quietly
       or left unnamed.
-    - `pit_loss_s` (20.0) and `seed` (the round number) are constants,
-      not data-derived, and carry nothing to leak.
+    - `pit_loss_s` (20.0), `seed` (the round number) and `n_runs` are
+      constants or settings, not data-derived, and carry nothing to leak.
 
     Grouping on race is also the more familiar guard: drivers in one race
     share its conditions, so a random split reports a score that cannot

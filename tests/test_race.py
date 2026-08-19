@@ -102,3 +102,56 @@ def test_overtaking_cost_is_finite_when_nobody_ever_passes():
     assert np.isfinite(cost)
     assert cost == pytest.approx(race.overtaking_cost(race.MIN_PASS_RATE))
     assert cost > race.overtaking_cost(0.1)
+
+
+FLAT_COEF = {"age_MEDIUM": 0.0, "age_HARD": 0.0, "fuel": 0.0}
+
+
+def test_an_overwhelmingly_fast_car_wins_from_the_back():
+    # VER is two seconds a lap faster and starts last. With passing cheap
+    # he must come through. If this fails, pace does not propagate at all.
+    pace = pd.Series({"VER": 88.0, "NOR": 90.0, "LEC": 90.0})
+    grid = pd.Series({"VER": 3.0, "NOR": 1.0, "LEC": 2.0})
+
+    finish = race.simulate_once(
+        pace, grid, FLAT_COEF, total_laps=30, pit_loss_s=20.0, pit_lap=15,
+        overtake_cost=0.1, dnf_per_lap=0.0, noise_s=0.0,
+        rng=np.random.default_rng(0),
+    )
+
+    assert finish["VER"] == 1.0
+
+
+def test_an_impossible_overtaking_cost_freezes_the_grid():
+    """The test that proves the overtaking constraint binds.
+
+    Same overwhelming pace advantage, but passing now costs more than any
+    car can ever gain. The finishing order must equal the grid order. If
+    the constraint were silently dropped, VER would win and this fails.
+    """
+    pace = pd.Series({"VER": 88.0, "NOR": 90.0, "LEC": 90.0})
+    grid = pd.Series({"VER": 3.0, "NOR": 1.0, "LEC": 2.0})
+
+    finish = race.simulate_once(
+        pace, grid, FLAT_COEF, total_laps=30, pit_loss_s=20.0, pit_lap=15,
+        overtake_cost=1e9, dnf_per_lap=0.0, noise_s=0.0,
+        rng=np.random.default_rng(0),
+    )
+
+    assert finish["NOR"] == 1.0
+    assert finish["LEC"] == 2.0
+    assert finish["VER"] == 3.0
+
+
+def test_every_driver_gets_exactly_one_finishing_position():
+    pace = pd.Series({"VER": 90.0, "NOR": 90.5, "LEC": 91.0})
+    grid = pd.Series({"VER": 1.0, "NOR": 2.0, "LEC": 3.0})
+
+    finish = race.simulate_once(
+        pace, grid, FLAT_COEF, total_laps=10, pit_loss_s=20.0, pit_lap=5,
+        overtake_cost=0.25, dnf_per_lap=0.5, noise_s=0.0,
+        rng=np.random.default_rng(3),
+    )
+
+    assert sorted(finish.values) == [1.0, 2.0, 3.0]
+    assert set(finish.index) == {"VER", "NOR", "LEC"}

@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from f1_predict import strategy
+
 
 def dnf_hazard(finished: pd.Series, total_laps: int) -> float:
     """Probability of retiring on any single lap.
@@ -80,3 +82,70 @@ def overtaking_cost(
     simulation runs on.
     """
     return base_cost * reference_rate / max(pass_rate, MIN_PASS_RATE)
+
+
+def simulate_once(
+    pace: pd.Series,
+    grid: pd.Series,
+    coef: dict,
+    total_laps: int,
+    pit_loss_s: float,
+    pit_lap: int,
+    overtake_cost: float,
+    dnf_per_lap: float,
+    noise_s: float,
+    temp_delta: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> pd.Series:
+    """Run one race and return each driver's finishing position.
+
+    Track order is explicit rather than inferred from cumulative time. A
+    car only takes a position when its cumulative-time advantage exceeds
+    `overtake_cost`, which is what stops the simulation walking fast cars
+    to the front as though passing were free.
+
+    Retirements are classified behind every finisher, latest retirement
+    first -- a driver who lasted 50 laps places ahead of one who lasted 5,
+    matching how F1 classifies non-finishers.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+
+    order = list(grid.sort_values().index)
+    cumulative = {driver: 0.0 for driver in order}
+    retired: list[tuple[int, str]] = []
+
+    for lap in range(1, total_laps + 1):
+        for driver in list(order):
+            if dnf_per_lap > 0.0 and rng.random() < dnf_per_lap:
+                order.remove(driver)
+                retired.append((lap, driver))
+                continue
+
+            compound = "MEDIUM" if lap <= pit_lap else "HARD"
+            tyre_age = lap if lap <= pit_lap else lap - pit_lap
+            seconds = strategy.lap_time(
+                coef,
+                float(pace[driver]),
+                compound,
+                tyre_age,
+                total_laps - lap,
+                temp_delta=temp_delta,
+            )
+            if noise_s > 0.0:
+                seconds += rng.normal(0.0, noise_s)
+            if lap == pit_lap:
+                seconds += pit_loss_s
+            cumulative[driver] += seconds
+
+        # A pass needs more than overtake_cost of cumulative advantage.
+        # One adjacent sweep per lap: a car cannot gain two places in a
+        # single lap, which matches how position changes actually happen.
+        for i in range(len(order) - 1):
+            ahead, behind = order[i], order[i + 1]
+            if cumulative[behind] + overtake_cost < cumulative[ahead]:
+                order[i], order[i + 1] = behind, ahead
+
+    classified = order + [driver for _, driver in sorted(retired, reverse=True)]
+    return pd.Series(
+        {driver: float(i + 1) for i, driver in enumerate(classified)}
+    ).reindex(pace.index)

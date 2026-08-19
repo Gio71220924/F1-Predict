@@ -186,3 +186,128 @@ def probabilities(n_runs: int = 10000, seed: int = 0, **kwargs) -> pd.DataFrame:
             "p_points": points / n_runs,
         }
     )
+
+
+def brier(predicted: pd.Series, outcome: pd.Series) -> float:
+    """Mean squared error between a stated probability and a 0/1 outcome.
+
+    The right metric for a probabilistic forecast: it punishes confident
+    wrongness harder than honest uncertainty, which is the property needed
+    when the simulation is known to be overconfident from leaving safety
+    cars out.
+    """
+    return float(np.mean((predicted.to_numpy(float) - outcome.to_numpy(float)) ** 2))
+
+
+def grid_baseline(results: pd.DataFrame) -> pd.DataFrame:
+    """Historical outcome rates for each grid slot. No simulation at all.
+
+    This is what the simulator must beat. Measured over the full 2026
+    season, pole wins 73% of the time and P2 wins 27%, with no winner from
+    further back -- a strong table to have to improve on.
+    """
+    frame = results.copy()
+    frame["p_win"] = (frame["position"] == 1.0).astype(float)
+    frame["p_podium"] = (frame["position"] <= PODIUM).astype(float)
+    frame["p_points"] = (frame["position"] <= POINTS).astype(float)
+    return frame.groupby("grid")[["p_win", "p_podium", "p_points"]].mean()
+
+
+def baseline_for(table: pd.DataFrame, grid_slot: float) -> pd.Series:
+    """Rates for one grid slot, falling back to the nearest slot present.
+
+    A fold's training races may contain no example of a given grid slot.
+    Returning a null there would make the baseline unscorable, so the
+    nearest observed slot stands in.
+    """
+    if grid_slot in table.index:
+        return table.loc[grid_slot]
+    nearest = table.index[np.argmin(np.abs(table.index.to_numpy(float) - grid_slot))]
+    return table.loc[nearest]
+
+
+OUTCOMES = ("p_win", "p_podium", "p_points")
+
+
+def _hit(position: float, outcome: str) -> float:
+    """Did this finishing position count as the outcome in question."""
+    if outcome == "p_win":
+        return float(position == 1.0)
+    if outcome == "p_podium":
+        return float(position <= PODIUM)
+    return float(position <= POINTS)
+
+
+def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
+    """Leave-one-race-out Brier scores, simulation against grid baseline.
+
+    Grouped on race for the reason every earlier subsystem was: drivers in
+    one race share its conditions, so a random split reports a score that
+    cannot reproduce on an unseen race.
+    """
+    from f1_predict import model, sessions
+
+    fitted = model.load()
+    coef = fitted["coef"]
+    noise_s = float(fitted["cv"]["mae_mean"])
+    laps = pd.read_csv("data/processed/laps.csv")
+
+    frames = []
+    for round_no in sorted(laps["round"].unique()):
+        frame = sessions.race_result(year, int(round_no))
+        frame["round"] = int(round_no)
+        frames.append(frame)
+    results = pd.concat(frames, ignore_index=True)
+
+    predicted = {outcome: [] for outcome in OUTCOMES}
+    baseline = {outcome: [] for outcome in OUTCOMES}
+    actual = {outcome: [] for outcome in OUTCOMES}
+
+    for round_no in sorted(results["round"].unique()):
+        train = results[results["round"] != round_no]
+        test = results[results["round"] == round_no].set_index("driver")
+        table = grid_baseline(train)
+
+        race_laps = laps[laps["round"] == round_no]
+        pace = race_laps.groupby("driver")["lap_seconds"].median()
+        grid = test["grid"].reindex(pace.index).dropna()
+        grid = grid[grid > 0]
+        pace = pace.reindex(grid.index)
+        total_laps = int(race_laps["lap_number"].max())
+
+        simulated = probabilities(
+            n_runs=n_runs, seed=int(round_no),
+            pace=pace, grid=grid, coef=coef,
+            total_laps=total_laps, pit_loss_s=20.0,
+            pit_lap=total_laps // 2,
+            overtake_cost=overtaking_cost(
+                track_pass_rate(sessions.race_positions(year, int(round_no)))
+            ),
+            dnf_per_lap=dnf_hazard(train["finished"], total_laps),
+            # MAE understates a normal's standard deviation by roughly
+            # 25%, so this is a slight under-dispersion on top of an
+            # already overconfident simulation. Both push the same way,
+            # and both belong in the model card.
+            noise_s=noise_s,
+        )
+
+        for driver in grid.index:
+            position = float(test.loc[driver, "position"])
+            slot_rates = baseline_for(table, float(grid[driver]))
+            for outcome in OUTCOMES:
+                actual[outcome].append(_hit(position, outcome))
+                predicted[outcome].append(float(simulated.loc[driver, outcome]))
+                baseline[outcome].append(float(slot_rates[outcome]))
+
+    return {
+        "n_rows": len(actual["p_win"]),
+        "n_races": int(results["round"].nunique()),
+        "model": {
+            outcome: brier(pd.Series(predicted[outcome]), pd.Series(actual[outcome]))
+            for outcome in OUTCOMES
+        },
+        "baseline": {
+            outcome: brier(pd.Series(baseline[outcome]), pd.Series(actual[outcome]))
+            for outcome in OUTCOMES
+        },
+    }

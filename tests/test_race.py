@@ -216,3 +216,50 @@ def test_probabilities_raises_on_non_positive_n_runs():
 
     with pytest.raises(ValueError, match="n_runs must be positive"):
         race.probabilities(n_runs=-10, **args)
+
+
+def test_brier_rewards_confident_correctness_and_punishes_confident_error():
+    outcome = pd.Series([1.0, 0.0, 0.0])
+
+    perfect = race.brier(pd.Series([1.0, 0.0, 0.0]), outcome)
+    hedged = race.brier(pd.Series([0.5, 0.5, 0.5]), outcome)
+    confident_wrong = race.brier(pd.Series([0.0, 1.0, 1.0]), outcome)
+
+    assert perfect == pytest.approx(0.0)
+    assert confident_wrong > hedged > perfect
+    assert confident_wrong == pytest.approx(1.0)
+
+
+def test_grid_baseline_reads_rates_off_the_grid_slot():
+    # Two races. Pole won both; P2 never won but always made the podium.
+    results = pd.DataFrame(
+        {
+            "round": [1, 1, 1, 2, 2, 2],
+            "grid": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+            "position": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+            "finished": [True] * 6,
+        }
+    )
+
+    table = race.grid_baseline(results)
+
+    assert table.loc[1.0, "p_win"] == pytest.approx(1.0)
+    assert table.loc[2.0, "p_win"] == pytest.approx(0.0)
+    assert table.loc[2.0, "p_podium"] == pytest.approx(1.0)
+
+
+def test_grid_baseline_falls_back_for_an_unseen_grid_slot():
+    # A fold's training races may never have had anyone start P20. The
+    # baseline must still answer rather than returning a null.
+    results = pd.DataFrame(
+        {
+            "round": [1, 1],
+            "grid": [1.0, 2.0],
+            "position": [1.0, 2.0],
+            "finished": [True, True],
+        }
+    )
+
+    rate = race.baseline_for(race.grid_baseline(results), grid_slot=20.0)
+
+    assert 0.0 <= rate["p_win"] <= 1.0

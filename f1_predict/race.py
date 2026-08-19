@@ -295,18 +295,17 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
       entry's provenance and introduces nothing of its own. Every
       simulated driver stops on the same lap; no strategy reacts to a
       rival.
-    - `coef`, `noise_s`: **NOT held to this standard.** `model.load()`
-      returns a tyre-degradation model fit once across all eleven
-      rounds, including whichever round is currently held out, so both
-      the degradation coefficients and the noise scale carry information
-      from the race being scored. This is a known, deliberately
-      undisturbed leak: refitting the tyre model inside every fold would
-      be a substantial change to another subsystem's artifact, and the
-      simulator already loses to the grid baseline with this leak still
-      helping it, so removing it could only widen the loss. The
-      conclusion is robust to the defect; fixing it would cost real work
-      to move nothing. Left in and named here rather than fixed quietly
-      or left unnamed.
+    - `coef`, `noise_s`: held to this standard. Both come from
+      `model.fit` run on `train_laps` -- every round's laps except the
+      one currently held out -- so the degradation coefficients carry no
+      information from the race being scored. `noise_s` is the residual
+      standard deviation of that same training fit (`y - x @ coef`), not
+      a stored cross-validation MAE: the simulation samples lap-time
+      noise as a standard deviation, and MAE understates a normal's
+      standard deviation by roughly 25%, so using it directly would have
+      been both leaky and slightly under-dispersed. Refit per fold, at
+      the cost of one `model.fit` call per held-out round instead of a
+      single `model.load()`.
     - `pit_loss_s` (20.0), `seed` (the round number) and `n_runs` are
       constants or settings, not data-derived, and carry nothing to leak.
 
@@ -318,9 +317,7 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
 
     from f1_predict import model, sessions
 
-    fitted = model.load()
-    coef = fitted["coef"]
-    noise_s = float(fitted["cv"]["mae_mean"])
+    all_laps, _ = model._load_training_frame("data/processed/laps.csv")
     laps = pd.read_csv("data/processed/laps.csv")
 
     frames = []
@@ -389,6 +386,16 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
         ]
         overtake_cost = float(np.median(training_costs))
 
+        # Tyre model fit on training rounds only -- see the docstring's
+        # `coef`, `noise_s` bullet. noise_s is the training fit's own
+        # residual standard deviation, not a stored cross-validation MAE.
+        train_laps = all_laps[all_laps["round"] != round_no]
+        fold_fit = model.fit(train_laps, with_temp=True)
+        coef = fold_fit["coef"]
+        x, y = model.design_matrix(train_laps, with_temp=True)
+        residuals = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
+        noise_s = float(residuals.std())
+
         simulated = probabilities(
             n_runs=n_runs, seed=int(round_no),
             pace=pace, grid=grid, coef=coef,
@@ -396,10 +403,6 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
             pit_lap=total_laps // 2,
             overtake_cost=overtake_cost,
             dnf_per_lap=dnf_hazard(train["finished"], total_laps),
-            # MAE understates a normal's standard deviation by roughly
-            # 25%, so this is a slight under-dispersion on top of an
-            # already overconfident simulation. Both push the same way,
-            # and both belong in the model card.
             noise_s=noise_s,
         )
 

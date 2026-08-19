@@ -164,6 +164,8 @@ def probabilities(n_runs: int = 10000, seed: int = 0, **kwargs) -> pd.DataFrame:
     simulated races instead, and what gets fitted from real data is lap
     time, which has thousands of observations.
     """
+    if n_runs <= 0:
+        raise ValueError(f"n_runs must be positive, got {n_runs}")
     rng = np.random.default_rng(seed)
     drivers = kwargs["pace"].index
 

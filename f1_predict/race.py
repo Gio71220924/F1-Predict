@@ -411,10 +411,19 @@ def evaluate(year: int = 2026, n_runs: int = 2000) -> dict:
                 predicted[outcome].append(float(simulated.loc[driver, outcome]))
                 baseline[outcome].append(float(slot_rates[outcome]))
 
+    # Report the whole exclusion, not just the part this loop caused.
+    # `n_dropped` alone counts drivers missing from a scored round; the
+    # rows belonging to a skipped round never reach that counter at all,
+    # so a caller reading only this dict would put the exclusion at 3%
+    # when it is 12%.
+    scored = len(actual["p_win"])
     return {
-        "n_rows": len(actual["p_win"]),
+        "n_rows": scored,
+        "n_rows_total": int(len(results)),
         "n_races": int(results["round"].nunique()) - len(skipped_rounds),
+        "n_races_total": int(results["round"].nunique()),
         "n_dropped": n_dropped,
+        "n_excluded_total": int(len(results)) - scored,
         "skipped_rounds": skipped_rounds,
         "model": {
             outcome: brier(pd.Series(predicted[outcome]), pd.Series(actual[outcome]))

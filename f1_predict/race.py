@@ -115,6 +115,12 @@ def simulate_once(
 
     order = list(grid.sort_values().index)
     cumulative = {driver: 0.0 for driver in order}
+    # Tyre state per driver rather than derived from the lap number. At
+    # lap 1 every age below becomes 1, and the first lap after a stop
+    # becomes 1 again, which is what the lap-derived rule produced.
+    compound = {driver: "MEDIUM" for driver in order}
+    tyre_age = {driver: 0 for driver in order}
+    pits_at = {driver: pit_lap for driver in order}
     retired: list[tuple[int, str]] = []
 
     for lap in range(1, total_laps + 1):
@@ -124,20 +130,21 @@ def simulate_once(
                 retired.append((lap, driver))
                 continue
 
-            compound = "MEDIUM" if lap <= pit_lap else "HARD"
-            tyre_age = lap if lap <= pit_lap else lap - pit_lap
+            tyre_age[driver] += 1
             seconds = strategy.lap_time(
                 coef,
                 float(pace[driver]),
-                compound,
-                tyre_age,
+                compound[driver],
+                tyre_age[driver],
                 total_laps - lap,
                 temp_delta=temp_delta,
             )
             if noise_s > 0.0:
                 seconds += rng.normal(0.0, noise_s)
-            if lap == pit_lap:
+            if lap == pits_at[driver]:
                 seconds += pit_loss_s
+                compound[driver] = "HARD"
+                tyre_age[driver] = 0
             cumulative[driver] += seconds
 
         # A pass needs more than overtake_cost of cumulative advantage.

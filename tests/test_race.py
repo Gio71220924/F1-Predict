@@ -157,6 +157,30 @@ def test_every_driver_gets_exactly_one_finishing_position():
     assert set(finish.index) == {"VER", "NOR", "LEC"}
 
 
+def test_simulate_once_is_unchanged_by_the_tyre_state_refactor():
+    """A golden test, and the only thing standing between the refactor and
+    a silent behaviour change.
+
+    simulate_once is about to stop deriving compound and tyre age from the
+    lap number and start tracking them per driver. That is a precondition
+    for starting mid-race, where drivers are on different tyres of
+    different ages. The output for a from-the-grid run must not move.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.4, "CCC": 91.0, "DDD": 91.2})
+    grid = pd.Series({"AAA": 1.0, "BBB": 2.0, "CCC": 3.0, "DDD": 4.0})
+    coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=coef, total_laps=20, pit_loss_s=20.0,
+        pit_lap=10, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.5,
+        rng=np.random.default_rng(7),
+    )
+
+    # Generated from the pre-refactor implementation by Step 1. Paste that
+    # dict here in place of these values.
+    assert dict(out) == {"AAA": 1.0, "BBB": 2.0, "CCC": 3.0, "DDD": 4.0}
+
+
 def test_probabilities_sum_to_one_across_drivers():
     pace = pd.Series({"VER": 89.0, "NOR": 90.0, "LEC": 91.0, "HAM": 92.0})
     grid = pd.Series({"VER": 1.0, "NOR": 2.0, "LEC": 3.0, "HAM": 4.0})

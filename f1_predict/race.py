@@ -99,6 +99,8 @@ def simulate_once(
     noise_s: float,
     temp_delta: float = 0.0,
     rng: np.random.Generator | None = None,
+    state: pd.DataFrame | None = None,
+    start_lap: int = 0,
 ) -> pd.Series:
     """Run one race and return each driver's finishing position.
 
@@ -110,20 +112,41 @@ def simulate_once(
     Retirements are classified behind every finisher, latest retirement
     first -- a driver who lasted 50 laps places ahead of one who lasted 5,
     matching how F1 classifies non-finishers.
+
+    `state` seeds the simulation part-way through a race instead of from
+    the grid. It is a frame indexed by driver with columns `position`,
+    `elapsed_s`, `compound`, `tyre_age`, and `pitted`, describing each
+    driver as of the end of lap `start_lap`; the loop then runs laps
+    `start_lap + 1` through `total_laps`. `state is None` is the
+    from-the-grid case and behaves exactly as before.
     """
     rng = rng if rng is not None else np.random.default_rng()
 
-    order = list(grid.sort_values().index)
-    cumulative = {driver: 0.0 for driver in order}
-    # Tyre state per driver rather than derived from the lap number. At
-    # lap 1 every age below becomes 1, and the first lap after a stop
-    # becomes 1 again, which is what the lap-derived rule produced.
-    compound = {driver: "MEDIUM" for driver in order}
-    tyre_age = {driver: 0 for driver in order}
-    pits_at = {driver: pit_lap for driver in order}
+    if state is None:
+        order = list(grid.sort_values().index)
+        cumulative = {driver: 0.0 for driver in order}
+        # Tyre state per driver rather than derived from the lap number.
+        # At lap 1 every age below becomes 1, and the first lap after a
+        # stop becomes 1 again, which is what the lap-derived rule
+        # produced.
+        compound = {driver: "MEDIUM" for driver in order}
+        tyre_age = {driver: 0 for driver in order}
+        pits_at = {driver: pit_lap for driver in order}
+    else:
+        order = list(state["position"].sort_values().index)
+        cumulative = {d: float(state.loc[d, "elapsed_s"]) for d in order}
+        compound = {d: str(state.loc[d, "compound"]) for d in order}
+        tyre_age = {d: int(state.loc[d, "tyre_age"]) for d in order}
+        # A driver who has already stopped is assumed to run to the end.
+        # One who has not must still stop, and the stop cannot be in the
+        # past -- scheduling it before start_lap would be a free pit stop.
+        pits_at = {
+            d: (0 if bool(state.loc[d, "pitted"]) else max(pit_lap, start_lap + 1))
+            for d in order
+        }
     retired: list[tuple[int, str]] = []
 
-    for lap in range(1, total_laps + 1):
+    for lap in range(start_lap + 1, total_laps + 1):
         for driver in list(order):
             if dnf_per_lap > 0.0 and rng.random() < dnf_per_lap:
                 order.remove(driver)

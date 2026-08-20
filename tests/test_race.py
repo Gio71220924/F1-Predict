@@ -211,6 +211,103 @@ def test_simulate_once_is_unchanged_by_the_tyre_state_refactor():
     assert dict(out) == {"AAA": 1.0, "BBB": 4.0, "CCC": 2.0, "DDD": 3.0}
 
 
+def _grid_state(grid):
+    """The mid-race state that is identical to starting from the grid."""
+    return pd.DataFrame(
+        {
+            "position": grid,
+            "elapsed_s": pd.Series(0.0, index=grid.index),
+            "compound": pd.Series("MEDIUM", index=grid.index),
+            "tyre_age": pd.Series(0, index=grid.index),
+            "pitted": pd.Series(False, index=grid.index),
+        }
+    )
+
+
+def test_starting_from_lap_zero_reproduces_the_grid_start_exactly():
+    """The guard against two simulators that drift apart.
+
+    Starting from the grid is meant to be the special case of starting
+    mid-race with N = 0. If these two ever disagree, both become
+    untrustworthy and there is no way to tell which one is right.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.4, "CCC": 91.0, "DDD": 91.2})
+    grid = pd.Series({"AAA": 1.0, "BBB": 2.0, "CCC": 3.0, "DDD": 4.0})
+    coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
+    common = dict(
+        pace=pace, grid=grid, coef=coef, total_laps=20, pit_loss_s=20.0,
+        pit_lap=10, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.5,
+    )
+
+    from_grid = race.simulate_once(rng=np.random.default_rng(7), **common)
+    from_state = race.simulate_once(
+        rng=np.random.default_rng(7),
+        state=_grid_state(grid), start_lap=0, **common,
+    )
+
+    assert dict(from_grid) == dict(from_state)
+
+
+def test_a_mid_race_lead_is_carried_into_the_result():
+    """Elapsed time at lap N is the premise, not a detail.
+
+    A driver two minutes ahead with five laps left wins. If the seeded
+    elapsed time were dropped, this would come out as a coin flip, and no
+    aggregate score would reveal it.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
+    grid = pd.Series({"AAA": 2.0, "BBB": 1.0})
+    coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"AAA": 1.0, "BBB": 2.0}),
+            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3120.0}),
+            "compound": pd.Series({"AAA": "HARD", "BBB": "HARD"}),
+            "tyre_age": pd.Series({"AAA": 12, "BBB": 12}),
+            "pitted": pd.Series({"AAA": True, "BBB": True}),
+        }
+    )
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=coef, total_laps=55, pit_loss_s=20.0,
+        pit_lap=27, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=50, rng=np.random.default_rng(1),
+    )
+
+    assert out["AAA"] == 1.0
+
+
+def test_a_driver_who_has_not_pitted_still_has_to_stop():
+    """Mid-race we know who has stopped. We do not know what they do next.
+
+    A driver still on their first set at lap 40 of 55 has a stop coming;
+    scheduling it in the past would hand them a free pit stop and a lead
+    they never had.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
+    grid = pd.Series({"AAA": 1.0, "BBB": 2.0})
+    coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"AAA": 1.0, "BBB": 2.0}),
+            "elapsed_s": pd.Series({"AAA": 3600.0, "BBB": 3600.0}),
+            "compound": pd.Series({"AAA": "MEDIUM", "BBB": "HARD"}),
+            "tyre_age": pd.Series({"AAA": 40, "BBB": 13}),
+            "pitted": pd.Series({"AAA": False, "BBB": True}),
+        }
+    )
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=coef, total_laps=55, pit_loss_s=20.0,
+        pit_lap=27, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=40, rng=np.random.default_rng(1),
+    )
+
+    # AAA pays a 20 s stop in the remaining 15 laps and BBB does not, on
+    # identical pace. BBB finishes ahead.
+    assert out["BBB"] == 1.0
+
+
 def test_probabilities_sum_to_one_across_drivers():
     pace = pd.Series({"VER": 89.0, "NOR": 90.0, "LEC": 91.0, "HAM": 92.0})
     grid = pd.Series({"VER": 1.0, "NOR": 2.0, "LEC": 3.0, "HAM": 4.0})

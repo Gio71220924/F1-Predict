@@ -173,3 +173,36 @@ def test_position_baseline_counts_conversion_by_track_position():
     assert table.loc[2.0, "p_podium"] == pytest.approx(1.0)
     assert table.loc[2.0, "p_points"] == pytest.approx(1.0)
     assert table.loc[15.0, "p_points"] == pytest.approx(0.0)
+
+
+def test_the_simulation_converges_on_the_leader_near_the_end():
+    """Spec section 6.2, and independent of any Brier score.
+
+    With two laps left and a two-minute lead, P(win) for the leader must
+    be essentially 1. A simulator that does not converge on a race it is
+    watching is broken no matter what its aggregate score says, and this
+    is the test that catches a mis-seeded state -- a dropped elapsed time,
+    or a state indexed in the wrong order.
+    """
+    from f1_predict import race
+
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.0, "CCC": 90.0})
+    grid = pd.Series({"AAA": 3.0, "BBB": 1.0, "CCC": 2.0})
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"AAA": 1.0, "BBB": 2.0, "CCC": 3.0}),
+            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3120.0, "CCC": 3140.0}),
+            "compound": pd.Series({"AAA": "HARD", "BBB": "HARD", "CCC": "HARD"}),
+            "tyre_age": pd.Series({"AAA": 10, "BBB": 10, "CCC": 10}),
+            "pitted": pd.Series({"AAA": True, "BBB": True, "CCC": True}),
+        }
+    )
+
+    out = race.probabilities(
+        n_runs=200, seed=3,
+        pace=pace, grid=grid, coef={"age_HARD": 0.045, "fuel": 0.041},
+        total_laps=55, pit_loss_s=20.0, pit_lap=27, overtake_cost=0.25,
+        dnf_per_lap=0.0, noise_s=0.5, state=state, start_lap=53,
+    )
+
+    assert out.loc["AAA", "p_win"] > 0.99

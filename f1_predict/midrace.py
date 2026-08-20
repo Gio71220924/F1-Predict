@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import warnings
 
+import numpy as np
 import pandas as pd
 
 from f1_predict import race
@@ -112,3 +113,230 @@ def race_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
     # after it has already cut the frame to laps at or before N -- see the
     # comment there for why the fill lives there rather than here.
     return state_from_laps(frame, lap)
+
+
+_STATE_CACHE: dict[tuple[int, int, int], pd.DataFrame] = {}
+
+
+def _cached_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
+    """race_state memoised on (year, round, lap).
+
+    The evaluation asks for the same training round at the same lap once
+    per fold, so without this the same session is loaded and parsed about
+    ten times over -- 550 loads across the season instead of 55.
+    """
+    key = (year, round_no, lap)
+    if key not in _STATE_CACHE:
+        _STATE_CACHE[key] = race_state(year, round_no, lap)
+    return _STATE_CACHE[key]
+
+
+# Fractions of race distance rather than fixed lap numbers: races run from
+# 44 to 78 laps, so lap 30 is mid-race at one circuit and three quarters
+# distance at another. 0.0 resolves to lap 1 through the max() below and
+# is the anchor of the curve -- near enough to the grid that it should
+# score close to subsystem B.
+SCORE_FRACTIONS = (0.0, 0.25, 0.5, 0.75, 0.9)
+
+
+def _training_table(results, train, year, fraction, total_by_round):
+    """The position-at-N baseline, built from TRAINING rounds only.
+
+    `total_by_round` is the scheduled distance of every round, computed
+    once by the caller. It must be a LAP count: an earlier draft used the
+    number of classified drivers, which put 75% distance at lap 15 for
+    every circuit whether the race ran 44 laps or 78, and a baseline read
+    systematically too early would have flattered the model in exactly the
+    comparison that decides the verdict.
+    """
+    observations = []
+    for other in sorted(train["round"].unique()):
+        other = int(other)
+        other_results = results[results["round"] == other].set_index("driver")
+        lap = max(1, int(round(total_by_round[other] * fraction)))
+        try:
+            other_state = _cached_state(year, other, lap)
+        except Exception:  # noqa: BLE001 - a missing round must not stop the fold
+            continue
+        for driver in other_state.index:
+            if driver in other_results.index:
+                observations.append(
+                    {
+                        "position_at_n": float(other_state.loc[driver, "position"]),
+                        "position": float(other_results.loc[driver, "position"]),
+                    }
+                )
+    return position_baseline(pd.DataFrame(observations))
+
+
+def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict]:
+    """One row per driver per scored lap, leave-one-race-out.
+
+    Every input to the simulation, and whether it is knowable at lap N of
+    the race being scored:
+
+    - `state`: the race as it stood at lap N. The premise of the question,
+      not an outcome of it. Nothing after lap N is read.
+    - `total_laps`: the originally SCHEDULED distance from
+      `race._scheduled_laps`, never the completed count -- the British
+      Grand Prix completed 47 laps against 52 scheduled.
+    - `pace`: each driver's median clean lap from their OWN laps up to lap
+      N. Race-blind for everything after N, and the strongest legitimate
+      signal available mid-race.
+    - `coef`, `noise_s`: fitted on every round except the held-out one,
+      refit per fold, as in `race.predictions`. `noise_s` is that fit's
+      residual standard deviation, not a cross-validation MAE.
+    - `overtake_cost`: the median of every OTHER round's measured passing
+      rate. `dnf_per_lap`: fitted on training rounds only.
+    - `grid`: passed only to give `simulate_once` an index; `state`
+      supplies the running order. It carries no information the state
+      does not already have.
+    - `n_runs`, `seed`, `pit_loss_s`, `pit_lap`: constants or settings,
+      nothing data-derived to leak.
+    """
+    import fastf1
+
+    from f1_predict import model, sessions
+
+    all_laps, _ = model._load_training_frame("data/processed/laps.csv")
+    laps = pd.read_csv("data/processed/laps.csv")
+    event_by_round = laps.groupby("round")["event_name"].first()
+
+    frames = []
+    for round_no in sorted(laps["round"].unique()):
+        frame = sessions.race_result(year, int(round_no))
+        frame["round"] = int(round_no)
+        frames.append(frame)
+    results = pd.concat(frames, ignore_index=True)
+
+    fastf1.Cache.enable_cache("cache")
+
+    # Scheduled distance per round, computed once. Every consumer reads
+    # this dict, so the fold and its baseline cannot disagree about how
+    # long a race was.
+    total_by_round = {
+        int(r): race._scheduled_laps(
+            year, int(r),
+            fallback=int(laps[laps["round"] == r]["lap_number"].max()),
+        )
+        for r in sorted(laps["round"].unique())
+    }
+
+    own_cost = {
+        int(r): race.overtaking_cost(
+            race.track_pass_rate(sessions.race_positions(year, int(r)))
+        )
+        for r in sorted(results["round"].unique())
+    }
+
+    rows = []
+    skipped = []
+    for round_no in sorted(results["round"].unique()):
+        round_no = int(round_no)
+        train = results[results["round"] != round_no]
+        test = results[results["round"] == round_no].set_index("driver")
+
+        race_laps = laps[laps["round"] == round_no]
+        total_laps = total_by_round[round_no]
+
+        train_laps = all_laps[all_laps["round"] != round_no]
+        fold = model.fit(train_laps, with_temp=True)
+        coef = fold["coef"]
+        x, y = model.design_matrix(train_laps, with_temp=True)
+        residuals = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
+        noise_s = float(residuals.std())
+
+        overtake_cost = float(
+            np.median([c for r, c in own_cost.items() if r != round_no])
+        )
+        dnf_per_lap = race.dnf_hazard(train["finished"], total_laps)
+
+        for fraction in SCORE_FRACTIONS:
+            lap = max(1, int(round(total_laps * fraction)))
+            try:
+                state = _cached_state(year, round_no, lap)
+            except Exception as exc:  # noqa: BLE001 - one bad round must not stop the season
+                skipped.append(
+                    {"round": round_no, "lap": lap,
+                     "reason": f"{type(exc).__name__}: {exc}"}
+                )
+                continue
+            if state.empty:
+                skipped.append(
+                    {"round": round_no, "lap": lap, "reason": "no state at this lap"}
+                )
+                continue
+
+            seen = race_laps[race_laps["lap_number"] <= lap]
+            pace = seen.groupby("driver")["lap_seconds"].median()
+            drivers = [
+                d for d in state.index if d in pace.index and d in test.index
+            ]
+            if len(drivers) < 2:
+                skipped.append(
+                    {"round": round_no, "lap": lap, "reason": "fewer than 2 drivers"}
+                )
+                continue
+
+            fold_state = state.loc[drivers]
+            simulated = race.probabilities(
+                n_runs=n_runs, seed=round_no * 100 + lap,
+                pace=pace.reindex(drivers),
+                grid=fold_state["position"],
+                coef=coef, total_laps=total_laps, pit_loss_s=20.0,
+                pit_lap=total_laps // 2, overtake_cost=overtake_cost,
+                dnf_per_lap=dnf_per_lap, noise_s=noise_s,
+                state=fold_state, start_lap=lap,
+            )
+
+            table = _training_table(
+                results, train, year, fraction, total_by_round
+            )
+            for driver in drivers:
+                position = float(test.loc[driver, "position"])
+                at_n = float(fold_state.loc[driver, "position"])
+                slot = race.baseline_for(table, at_n)
+                row = {
+                    "round": round_no,
+                    "event_name": str(event_by_round.get(round_no, "")),
+                    "lap": lap, "fraction": fraction, "driver": driver,
+                    "position_at_n": at_n, "position": position,
+                }
+                for outcome in race.OUTCOMES:
+                    row[outcome] = float(simulated.loc[driver, outcome])
+                    row[f"base_{outcome}"] = float(slot[outcome])
+                    row[f"actual_{outcome}"] = race._hit(position, outcome)
+                rows.append(row)
+
+    if not rows:
+        raise RuntimeError(f"no round could be scored: {skipped}")
+
+    frame = pd.DataFrame(rows)
+    meta = {
+        "n_rows": int(len(frame)),
+        "n_races": int(frame["round"].nunique()),
+        "fractions": list(SCORE_FRACTIONS),
+        "skipped": skipped,
+    }
+    return frame, meta
+
+
+def evaluate(year: int = 2026, n_runs: int = 500) -> dict:
+    """Brier per fraction of race distance, model against baseline."""
+    frame, meta = predictions(year, n_runs)
+    curve = {}
+    for fraction in SCORE_FRACTIONS:
+        at = frame[frame["fraction"] == fraction]
+        if at.empty:
+            continue
+        curve[str(fraction)] = {
+            "n_rows": int(len(at)),
+            "model": {
+                o: race.brier(at[o], at[f"actual_{o}"]) for o in race.OUTCOMES
+            },
+            "baseline": {
+                o: race.brier(at[f"base_{o}"], at[f"actual_{o}"])
+                for o in race.OUTCOMES
+            },
+        }
+    return {**meta, "curve": curve}

@@ -369,11 +369,14 @@ with midrace_tab:
 
     st.line_chart(curve[["Model p_win", "Baseline p_win"]])
     st.info(
-        "**The model beats the baseline at 25% and 50% distance, and loses "
-        "at 75% and 90%.** At the first two points it has lower Brier than "
-        "the position-at-that-lap baseline on P(win), P(podium) and "
-        "P(points) alike -- the first time any model in this project has "
-        "beaten its mandatory baseline. Early in a race, track position is "
+        "**The model beats the baseline at 25% and 50% distance; the "
+        "baseline beats the model on all three outcomes at 75%; at 90% the "
+        "baseline clearly leads on P(win) and P(podium), while P(points) "
+        "is a dead heat too close to call from 11 races.** At the first "
+        "two points it has lower Brier than the position-at-that-lap "
+        "baseline on P(win), P(podium) and P(points) alike -- the first "
+        "time any model in this project has beaten its mandatory "
+        "baseline. Early in a race, track position is "
         "a weak signal, because most of the race and every pit stop is "
         "still ahead, so a simulation that knows pace and tyre state adds "
         "real information. Late in a race, position is nearly decisive and "

@@ -308,6 +308,44 @@ def test_a_driver_who_has_not_pitted_still_has_to_stop():
     assert out["BBB"] == 1.0
 
 
+def test_an_already_pitted_driver_is_not_charged_a_second_stop():
+    """The one scenario the brief's own mid-race test could not check.
+
+    There, pit_lap (27) had already passed relative to start_lap (40), so
+    pits_at == 0 and pits_at == pit_lap were indistinguishable -- the loop
+    never revisits a lap behind where it starts. Task 5 will call this
+    with pit_lap = total_laps // 2 and a start_lap as early as 25% of race
+    distance, where pit_lap sits comfortably ahead of start_lap and is
+    very much still in the simulated range. If an already-pitted driver's
+    pits_at were wrongly left at pit_lap instead of 0 in that regime, they
+    would be charged a second, imaginary 20-second stop they never made --
+    silently, in every scored race. Here pit_lap (27) falls inside the
+    simulated laps (21..55), so this is the test that can actually see it.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
+    grid = pd.Series({"AAA": 2.0, "BBB": 1.0})
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"AAA": 2.0, "BBB": 1.0}),
+            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3000.0}),
+            "compound": pd.Series({"AAA": "HARD", "BBB": "MEDIUM"}),
+            "tyre_age": pd.Series({"AAA": 5, "BBB": 20}),
+            "pitted": pd.Series({"AAA": True, "BBB": False}),
+        }
+    )
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=FLAT_COEF, total_laps=55, pit_loss_s=20.0,
+        pit_lap=27, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=20, rng=np.random.default_rng(1),
+    )
+
+    # BBB, still on its first set, pays a 20 s stop at lap 27 -- inside
+    # the simulated range. AAA, already pitted, pays nothing and overtakes
+    # despite starting behind, on otherwise identical pace.
+    assert out["AAA"] == 1.0
+
+
 def test_probabilities_sum_to_one_across_drivers():
     pace = pd.Series({"VER": 89.0, "NOR": 90.0, "LEC": 91.0, "HAM": 92.0})
     grid = pd.Series({"VER": 1.0, "NOR": 2.0, "LEC": 3.0, "HAM": 4.0})

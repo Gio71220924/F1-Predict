@@ -66,6 +66,20 @@ def state_from_laps(laps: pd.DataFrame, lap: int) -> pd.DataFrame:
     return running[STATE_COLUMNS].sort_values("position")
 
 
+def position_baseline(observations: pd.DataFrame) -> pd.DataFrame:
+    """Conversion rates by track position at lap N. No simulation at all.
+
+    Built from training races only, exactly as `race.grid_baseline` is
+    built from training grids. `race.baseline_for` handles a position with
+    no training example by falling back to the nearest one that has one.
+    """
+    frame = observations.copy()
+    frame["p_win"] = (frame["position"] == 1.0).astype(float)
+    frame["p_podium"] = (frame["position"] <= race.PODIUM).astype(float)
+    frame["p_points"] = (frame["position"] <= race.POINTS).astype(float)
+    return frame.groupby("position_at_n")[list(race.OUTCOMES)].mean()
+
+
 def race_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
     """`state_from_laps` for one real race, read from FastF1.
 

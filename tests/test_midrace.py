@@ -145,3 +145,27 @@ def test_a_null_tyre_age_is_filled_from_the_same_drivers_earlier_lap():
     assert state.loc["BBB", "tyre_age"] == 1.0, (
         "BBB has no earlier lap of its own, so must fall back to a fresh tyre"
     )
+
+
+def test_position_baseline_counts_conversion_by_track_position():
+    """The table the simulation has to beat.
+
+    Directly analogous to subsystem B's grid table, and expected to be
+    strong: by three quarters distance the leader usually wins. A mid-race
+    predictor that cannot beat 'whoever is leading now' has not earned its
+    complexity.
+    """
+    observations = pd.DataFrame(
+        {
+            "position_at_n": [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 15.0],
+            "position": [1.0, 1.0, 1.0, 4.0, 2.0, 1.0, 18.0],
+        }
+    )
+
+    table = midrace.position_baseline(observations)
+
+    assert table.loc[1.0, "p_win"] == pytest.approx(0.75)
+    assert table.loc[1.0, "p_podium"] == pytest.approx(0.75)
+    assert table.loc[1.0, "p_points"] == pytest.approx(1.0)
+    assert table.loc[2.0, "p_win"] == pytest.approx(0.5)
+    assert table.loc[15.0, "p_points"] == pytest.approx(0.0)

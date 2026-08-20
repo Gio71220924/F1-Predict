@@ -74,3 +74,42 @@ def test_a_retired_driver_is_absent_and_a_lapped_driver_is_not():
 def test_state_is_empty_before_the_race_starts():
     frame = _laps([["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False]])
     assert len(midrace.state_from_laps(frame, lap=0)) == 0
+
+
+def test_a_pit_stop_stays_remembered_on_later_laps():
+    """`pitted` must reflect the whole race so far, not just the latest lap.
+
+    `pitted` feeds `pits_at` in `race.simulate_once`: a driver wrongly
+    reported as not having pitted gets scheduled a second stop and is
+    charged 20 seconds they never lost, in every simulated race seeded
+    from that lap onward. PIT stops on lap 2 and is still queried on lap
+    6, well after the stop lap, so the flag can only be right if it looks
+    at the driver's whole history rather than only their most recent row.
+    CLR never pits at all, so a rule that just returns True for everyone
+    who has ever been near a pit lane would also be caught here.
+    """
+    frame = _laps(
+        [
+            ["PIT", 1, 1.0, "MEDIUM", 1, 1, 90.0, False],
+            ["PIT", 2, 1.0, "HARD", 1, 2, 195.0, True],
+            ["PIT", 3, 1.0, "HARD", 2, 2, 286.0, False],
+            ["PIT", 4, 1.0, "HARD", 3, 2, 377.0, False],
+            ["PIT", 5, 1.0, "HARD", 4, 2, 468.0, False],
+            ["PIT", 6, 1.0, "HARD", 5, 2, 559.0, False],
+            ["CLR", 1, 2.0, "MEDIUM", 1, 1, 91.0, False],
+            ["CLR", 2, 2.0, "MEDIUM", 2, 1, 182.0, False],
+            ["CLR", 3, 2.0, "MEDIUM", 3, 1, 273.0, False],
+            ["CLR", 4, 2.0, "MEDIUM", 4, 1, 364.0, False],
+            ["CLR", 5, 2.0, "MEDIUM", 5, 1, 455.0, False],
+            ["CLR", 6, 2.0, "MEDIUM", 6, 1, 546.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=6)
+
+    assert bool(state.loc["PIT", "pitted"]) is True, (
+        "the lap-2 stop must still be remembered four laps later"
+    )
+    assert bool(state.loc["CLR", "pitted"]) is False, (
+        "a driver who never pitted must not be flagged as having pitted"
+    )

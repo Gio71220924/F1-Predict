@@ -1,0 +1,76 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from f1_predict import midrace
+
+
+def _laps(rows):
+    """A minimal raw-lap frame in the shape race_state builds."""
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "driver", "lap_number", "position", "compound",
+            "tyre_age", "stint", "elapsed_s", "pitted",
+        ],
+    )
+
+
+def test_state_reads_the_latest_lap_at_or_before_n():
+    frame = _laps(
+        [
+            ["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False],
+            ["AAA", 2, 1.0, "MEDIUM", 2, 1, 183.0, False],
+            ["AAA", 3, 1.0, "MEDIUM", 3, 1, 274.0, False],
+            ["BBB", 1, 2.0, "MEDIUM", 1, 1, 93.0, False],
+            ["BBB", 2, 2.0, "HARD", 1, 2, 205.0, True],
+            ["BBB", 3, 2.0, "HARD", 2, 2, 296.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=2)
+
+    assert sorted(state.index) == ["AAA", "BBB"]
+    assert state.loc["AAA", "elapsed_s"] == pytest.approx(183.0)
+    assert state.loc["AAA", "tyre_age"] == 2
+    assert state.loc["BBB", "compound"] == "HARD"
+    # BBB pitted on lap 2, and that must be remembered at lap 2.
+    assert bool(state.loc["BBB", "pitted"]) is True
+    assert state.loc["BBB", "laps_completed"] == 2
+
+
+def test_a_retired_driver_is_absent_and_a_lapped_driver_is_not():
+    """Section 3.2 of the spec, as a test.
+
+    FastF1 gives no per-lap retirement flag. A driver missing from lap N
+    has either retired or is a lap down and has not reached it yet.
+    Conflating the two repeats subsystem B's `Lapped` trap in a new place:
+    a classified finisher would be silently dropped from the simulation.
+    """
+    frame = _laps(
+        [
+            ["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False],
+            ["AAA", 2, 1.0, "MEDIUM", 2, 1, 183.0, False],
+            ["AAA", 3, 1.0, "MEDIUM", 3, 1, 274.0, False],
+            ["AAA", 4, 1.0, "MEDIUM", 4, 1, 365.0, False],
+            ["AAA", 5, 1.0, "MEDIUM", 5, 1, 456.0, False],
+            # RET stopped after lap 1 and never appears again.
+            ["RET", 1, 3.0, "MEDIUM", 1, 1, 95.0, False],
+            # LAP is a lap down: still running, its lap 5 comes later.
+            ["LAP", 1, 4.0, "MEDIUM", 1, 1, 99.0, False],
+            ["LAP", 2, 4.0, "MEDIUM", 2, 1, 199.0, False],
+            ["LAP", 3, 4.0, "MEDIUM", 3, 1, 299.0, False],
+            ["LAP", 4, 4.0, "MEDIUM", 4, 1, 399.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=5)
+
+    assert "RET" not in state.index, "four laps of silence is a retirement"
+    assert "LAP" in state.index, "one lap down is still racing"
+    assert state.loc["LAP", "laps_completed"] == 4
+
+
+def test_state_is_empty_before_the_race_starts():
+    frame = _laps([["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False]])
+    assert len(midrace.state_from_laps(frame, lap=0)) == 0

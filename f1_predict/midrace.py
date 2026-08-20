@@ -133,13 +133,17 @@ def _cached_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
 
 # Fractions of race distance rather than fixed lap numbers: races run from
 # 44 to 78 laps, so lap 30 is mid-race at one circuit and three quarters
-# distance at another. 0.0 resolves to lap 1 through the max() below and
-# is the anchor of the curve -- near enough to the grid that it should
-# score close to subsystem B.
+# distance at another. 0.0 resolves to lap 1 through the max() below, but
+# `pace` is built from data/processed/laps.csv, which holds only clean
+# racing laps -- FastF1's is_accurate flag excludes lap 1 before
+# filter_laps ever runs -- so no driver has a clean lap that early and
+# every round is skipped at this fraction. It stays in the tuple so that
+# skip is recorded honestly rather than hidden by removing the attempt;
+# the curve that actually scores has four usable points, not five.
 SCORE_FRACTIONS = (0.0, 0.25, 0.5, 0.75, 0.9)
 
 
-def _training_table(results, train, year, fraction, total_by_round):
+def _training_table(results, train, year, fraction, total_by_round, skipped):
     """The position-at-N baseline, built from TRAINING rounds only.
 
     `total_by_round` is the scheduled distance of every round, computed
@@ -148,6 +152,13 @@ def _training_table(results, train, year, fraction, total_by_round):
     every circuit whether the race ran 44 laps or 78, and a baseline read
     systematically too early would have flattered the model in exactly the
     comparison that decides the verdict.
+
+    A training round that cannot be read is recorded on `skipped` -- the
+    same list `predictions` appends its own scoring skips to -- rather
+    than silently dropped. This baseline is the thing the model has to
+    beat: a baseline quietly built from fewer observations is a weaker
+    baseline, which would hand the model a win it did not earn in exactly
+    the comparison that decides whether this subsystem is worth anything.
     """
     observations = []
     for other in sorted(train["round"].unique()):
@@ -156,7 +167,11 @@ def _training_table(results, train, year, fraction, total_by_round):
         lap = max(1, int(round(total_by_round[other] * fraction)))
         try:
             other_state = _cached_state(year, other, lap)
-        except Exception:  # noqa: BLE001 - a missing round must not stop the fold
+        except Exception as exc:  # noqa: BLE001 - a missing round must not stop the fold
+            skipped.append(
+                {"round": other, "lap": lap,
+                 "reason": f"baseline: {type(exc).__name__}: {exc}"}
+            )
             continue
         for driver in other_state.index:
             if driver in other_results.index:
@@ -290,7 +305,7 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
             )
 
             table = _training_table(
-                results, train, year, fraction, total_by_round
+                results, train, year, fraction, total_by_round, skipped
             )
             for driver in drivers:
                 position = float(test.loc[driver, "position"])

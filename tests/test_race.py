@@ -251,17 +251,22 @@ def test_starting_from_lap_zero_reproduces_the_grid_start_exactly():
 def test_a_mid_race_lead_is_carried_into_the_result():
     """Elapsed time at lap N is the premise, not a detail.
 
-    A driver two minutes ahead with five laps left wins. If the seeded
-    elapsed time were dropped, this would come out as a coin flip, and no
-    aggregate score would reveal it.
+    `position` and `elapsed_s` are made to disagree on purpose: BBB holds
+    the better track position, but AAA is 200 seconds up the road in
+    actual race time -- a state a lagging position column could produce.
+    Identical pace and identical tyres from here mean elapsed_s is the
+    only thing that can decide the winner. A version of simulate_once
+    that seeded cumulative time at 0 instead of reading elapsed_s would
+    order purely by the position column and hand the win to BBB --
+    silently inverting a 200-second lead into a loss.
     """
     pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
     grid = pd.Series({"AAA": 2.0, "BBB": 1.0})
     coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
     state = pd.DataFrame(
         {
-            "position": pd.Series({"AAA": 1.0, "BBB": 2.0}),
-            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3120.0}),
+            "position": pd.Series({"AAA": 2.0, "BBB": 1.0}),
+            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3200.0}),
             "compound": pd.Series({"AAA": "HARD", "BBB": "HARD"}),
             "tyre_age": pd.Series({"AAA": 12, "BBB": 12}),
             "pitted": pd.Series({"AAA": True, "BBB": True}),
@@ -274,6 +279,9 @@ def test_a_mid_race_lead_is_carried_into_the_result():
         state=state, start_lap=50, rng=np.random.default_rng(1),
     )
 
+    # AAA is 200 s ahead in elapsed time despite trailing on track. Only a
+    # simulator that actually reads elapsed_s can find that and hand AAA
+    # the win over the next five laps.
     assert out["AAA"] == 1.0
 
 
@@ -281,8 +289,46 @@ def test_a_driver_who_has_not_pitted_still_has_to_stop():
     """Mid-race we know who has stopped. We do not know what they do next.
 
     A driver still on their first set at lap 40 of 55 has a stop coming;
-    scheduling it in the past would hand them a free pit stop and a lead
-    they never had.
+    scheduling it in the past -- or never charging it at all -- would hand
+    them a free pit stop and a lead they were never entitled to. Both
+    drivers are seeded on identical MEDIUM tyres at the same age, so the
+    pending 20-second stop is the only thing left that can separate them.
+    If simulate_once ever stopped charging it, every driver still on their
+    opening set would be overrated in every scored mid-race prediction.
+    """
+    pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
+    grid = pd.Series({"AAA": 1.0, "BBB": 2.0})
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"AAA": 1.0, "BBB": 2.0}),
+            "elapsed_s": pd.Series({"AAA": 3600.0, "BBB": 3600.0}),
+            "compound": pd.Series({"AAA": "MEDIUM", "BBB": "MEDIUM"}),
+            "tyre_age": pd.Series({"AAA": 20, "BBB": 20}),
+            "pitted": pd.Series({"AAA": False, "BBB": True}),
+        }
+    )
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=FLAT_COEF, total_laps=55, pit_loss_s=20.0,
+        pit_lap=27, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=40, rng=np.random.default_rng(1),
+    )
+
+    # Same compound, same tyre age, same pace -- AAA pays a 20 s stop in
+    # the remaining 15 laps and BBB does not. BBB finishes ahead.
+    assert out["BBB"] == 1.0
+
+
+def test_a_worn_leader_is_overtaken_by_a_fresher_car_behind():
+    """The seeded tyre state, not just its bookkeeping, has to steer pace.
+
+    AAA leads on track but is seeded on a worn MEDIUM; BBB trails on a
+    much fresher HARD. Pace, elapsed time, and pit status are all tied,
+    so only the tyre-degradation difference can move the order. A version
+    of simulate_once that defaulted every driver to MEDIUM at age 0 --
+    treating a mid-race seed like a fresh start -- would erase that
+    difference and leave AAA in front for the rest of the race, silently
+    hiding every driver who is actually fading on old rubber.
     """
     pace = pd.Series({"AAA": 90.0, "BBB": 90.0})
     grid = pd.Series({"AAA": 1.0, "BBB": 2.0})
@@ -290,10 +336,10 @@ def test_a_driver_who_has_not_pitted_still_has_to_stop():
     state = pd.DataFrame(
         {
             "position": pd.Series({"AAA": 1.0, "BBB": 2.0}),
-            "elapsed_s": pd.Series({"AAA": 3600.0, "BBB": 3600.0}),
+            "elapsed_s": pd.Series({"AAA": 3000.0, "BBB": 3000.0}),
             "compound": pd.Series({"AAA": "MEDIUM", "BBB": "HARD"}),
-            "tyre_age": pd.Series({"AAA": 40, "BBB": 13}),
-            "pitted": pd.Series({"AAA": False, "BBB": True}),
+            "tyre_age": pd.Series({"AAA": 30, "BBB": 2}),
+            "pitted": pd.Series({"AAA": True, "BBB": True}),
         }
     )
 
@@ -303,8 +349,8 @@ def test_a_driver_who_has_not_pitted_still_has_to_stop():
         state=state, start_lap=40, rng=np.random.default_rng(1),
     )
 
-    # AAA pays a 20 s stop in the remaining 15 laps and BBB does not, on
-    # identical pace. BBB finishes ahead.
+    # AAA's worn MEDIUM degrades faster than BBB's fresh HARD over the
+    # remaining 15 laps by far more than overtake_cost. BBB gets through.
     assert out["BBB"] == 1.0
 
 

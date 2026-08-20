@@ -226,14 +226,24 @@ def test_the_state_columns_the_simulator_needs_are_all_produced():
     from f1_predict import race
 
     source = inspect.getsource(race.simulate_once)
+    # Coupled to two incidental details of simulate_once's current source:
+    # the loop variable is named `d`, and column keys are double-quoted.
     needed_by_simulator = set(
         re.findall(r'state(?:\.loc\[d,\s*|\[)"(\w+)"', source)
     )
-    # A sanity check on the extraction itself: if this ever comes back
-    # empty, `simulate_once` no longer reads `state` the way the regex
-    # expects, and the assertion below would trivially pass for the wrong
-    # reason.
-    assert needed_by_simulator, "found no `state` column reads in simulate_once"
+    # A floor on the extraction, not a repeat of the comparison below: if a
+    # harmless refactor (renaming `d`, switching to `.at[]`, reformatting)
+    # shrinks what the regex above matches, this fails loudly and names
+    # what went missing, rather than the assertion below silently testing
+    # a smaller set than it claims to.
+    known_minimum = {"position", "elapsed_s", "compound", "tyre_age", "pitted"}
+    assert needed_by_simulator >= known_minimum, (
+        f"only found {sorted(needed_by_simulator)} in simulate_once's "
+        f"source, short of the known minimum {sorted(known_minimum)}. The "
+        f"regex above has stopped matching the simulator's source -- fix "
+        f"the regex. This is a test-infrastructure break, not necessarily "
+        f"a change to simulate_once."
+    )
     assert needed_by_simulator <= set(midrace.STATE_COLUMNS)
 
     frame = _laps([["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False]])

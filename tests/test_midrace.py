@@ -113,3 +113,35 @@ def test_a_pit_stop_stays_remembered_on_later_laps():
     assert bool(state.loc["CLR", "pitted"]) is False, (
         "a driver who never pitted must not be flagged as having pitted"
     )
+
+
+def test_a_null_tyre_age_is_filled_from_the_same_drivers_earlier_lap():
+    """A missing TyreLife reading must be filled forward, never sideways.
+
+    If this fill reads the wrong row -- a later lap, or another driver's
+    row that merely happens to sit nearby -- a driver with one missing
+    tyre-age reading is either dropped from the state (a NaN in
+    `STATE_COLUMNS`) or seeded onto a fresh tyre they are not actually on,
+    changing their simulated degradation for the rest of the race. AAA has
+    a known age on lap 1 and a null on lap 3, the queried lap, and must
+    inherit the lap-1 value, not fall back to a fresh tyre. BBB's only
+    lap is null with nothing earlier of its own to inherit, so it must
+    fall back to 1.0 instead.
+    """
+    frame = _laps(
+        [
+            ["AAA", 1, 1.0, "MEDIUM", 2, 1, 92.0, False],
+            ["AAA", 2, 1.0, "MEDIUM", np.nan, 1, 183.0, False],
+            ["AAA", 3, 1.0, "MEDIUM", np.nan, 1, 274.0, False],
+            ["BBB", 1, 2.0, "MEDIUM", np.nan, 1, 93.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=3)
+
+    assert state.loc["AAA", "tyre_age"] == 2, (
+        "AAA's null on the queried lap must inherit lap 1's known age"
+    )
+    assert state.loc["BBB", "tyre_age"] == 1.0, (
+        "BBB has no earlier lap of its own, so must fall back to a fresh tyre"
+    )

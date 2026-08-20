@@ -28,7 +28,10 @@ def state_from_laps(laps: pd.DataFrame, lap: int) -> pd.DataFrame:
     """The race state at `lap`, one row per driver still running.
 
     Reads only laps at or before `lap`. Everything after it is the answer
-    being predicted and must not be touched.
+    being predicted and must not be touched. A `lap` before the race has
+    started, or past the last lap anyone completed, simply yields an empty
+    frame -- there is nothing to raise about, since callers derive `lap`
+    from the scheduled race distance and cannot exceed it.
 
     Absence is resolved against the driver's own last completed lap, not
     against the leader's. A driver a lap down has simply not reached lap N
@@ -41,6 +44,17 @@ def state_from_laps(laps: pd.DataFrame, lap: int) -> pd.DataFrame:
         return pd.DataFrame(
             columns=STATE_COLUMNS, index=pd.Index([], name="driver")
         )
+
+    # TyreLife is null on some laps. Carry a driver's last known age
+    # forward rather than dropping the row and losing them from the state
+    # entirely. This fill sits *after* the lap-N cut above and sorts
+    # explicitly by lap number within each driver, so a null can only ever
+    # be filled from that same driver's own earlier lap -- never from a
+    # later one, which the raw frame's row order does not by itself
+    # guarantee. A driver whose very first seen lap is null has no earlier
+    # value to inherit, so falls back to a fresh tyre (1.0).
+    seen = seen.sort_values(["driver", "lap_number"]).copy()
+    seen["tyre_age"] = seen.groupby("driver")["tyre_age"].ffill().fillna(1.0)
 
     latest = seen.sort_values("lap_number").groupby("driver").last()
     # `pitted` is true if the driver has stopped at any point up to now,
@@ -80,8 +94,7 @@ def race_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
         }
     ).dropna(subset=["position", "elapsed_s"])
 
-    # TyreLife is null on about 2% of laps. Those laps are otherwise fine,
-    # so carry the driver's last known age forward rather than dropping the
-    # row and losing the driver from the state entirely.
-    frame["tyre_age"] = frame.groupby("driver")["tyre_age"].ffill().fillna(1.0)
+    # TyreLife nulls (about 2% of laps) are filled inside state_from_laps,
+    # after it has already cut the frame to laps at or before N -- see the
+    # comment there for why the fill lives there rather than here.
     return state_from_laps(frame, lap)

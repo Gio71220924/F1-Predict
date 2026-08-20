@@ -153,7 +153,9 @@ def test_position_baseline_counts_conversion_by_track_position():
     Directly analogous to subsystem B's grid table, and expected to be
     strong: by three quarters distance the leader usually wins. A mid-race
     predictor that cannot beat 'whoever is leading now' has not earned its
-    complexity.
+    complexity. The position-2.0 assertions separate p_podium from p_win,
+    which the position-1.0 rows cannot do because every winner there is also
+    a podium finisher.
     """
     observations = pd.DataFrame(
         {
@@ -168,4 +170,6 @@ def test_position_baseline_counts_conversion_by_track_position():
     assert table.loc[1.0, "p_podium"] == pytest.approx(0.75)
     assert table.loc[1.0, "p_points"] == pytest.approx(1.0)
     assert table.loc[2.0, "p_win"] == pytest.approx(0.5)
+    assert table.loc[2.0, "p_podium"] == pytest.approx(1.0)
+    assert table.loc[2.0, "p_points"] == pytest.approx(1.0)
     assert table.loc[15.0, "p_points"] == pytest.approx(0.0)

@@ -1,3 +1,6 @@
+import inspect
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -206,3 +209,33 @@ def test_the_simulation_converges_on_the_leader_near_the_end():
     )
 
     assert out.loc["AAA", "p_win"] > 0.99
+
+
+def test_the_state_columns_the_simulator_needs_are_all_produced():
+    """The app and the simulator both select columns by name.
+
+    Nothing else connects `state_from_laps` to `simulate_once`, so a
+    rename would surface only as a KeyError at run time -- in the app, or
+    part-way through a several-minute evaluation. The set of columns
+    `simulate_once` actually needs is read out of its own source rather
+    than copied into this test by hand: a hand-copied list would still
+    pass if `simulate_once` were edited to read a different column and
+    nobody remembered to update the copy, which is exactly the failure
+    this test exists to catch.
+    """
+    from f1_predict import race
+
+    source = inspect.getsource(race.simulate_once)
+    needed_by_simulator = set(
+        re.findall(r'state(?:\.loc\[d,\s*|\[)"(\w+)"', source)
+    )
+    # A sanity check on the extraction itself: if this ever comes back
+    # empty, `simulate_once` no longer reads `state` the way the regex
+    # expects, and the assertion below would trivially pass for the wrong
+    # reason.
+    assert needed_by_simulator, "found no `state` column reads in simulate_once"
+    assert needed_by_simulator <= set(midrace.STATE_COLUMNS)
+
+    frame = _laps([["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False]])
+    state = midrace.state_from_laps(frame, lap=1)
+    assert set(midrace.STATE_COLUMNS) == set(state.columns)

@@ -17,6 +17,7 @@ import pandas as pd
 
 QUALI_OUT = "data/processed/quali_predictions.csv"
 RACE_OUT = "data/processed/race_probabilities.csv"
+MIDRACE_OUT = "data/processed/midrace_predictions.csv"
 
 
 def _write(frame: pd.DataFrame, path: str) -> pd.DataFrame:
@@ -57,6 +58,19 @@ def race_probabilities(
     return _write(frame.sort_values(["round", "position"]), out_path)
 
 
+def midrace_predictions(
+    year: int = 2026, n_runs: int = 500, out_path: str = MIDRACE_OUT
+) -> pd.DataFrame:
+    from f1_predict import midrace
+
+    frame, meta = midrace.predictions(year, n_runs)
+    frame["skipped"] = "; ".join(
+        f"r{s['round']} lap {s['lap']}: {s['reason']}" for s in meta["skipped"]
+    )
+    return _write(frame.sort_values(["round", "fraction", "position"]), out_path)
+
+
 if __name__ == "__main__":
     quali_predictions()
     race_probabilities()
+    midrace_predictions()

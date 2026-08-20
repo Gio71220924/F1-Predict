@@ -84,8 +84,8 @@ def degradation_loss(compound, age, temp_delta):
     )
 
 
-degradation, strategy_tab, quali_tab, odds_tab, replay_tab, card = st.tabs(
-    ["Degradation", "Strategy", "Qualifying", "Race odds", "Replay", "Model card"]
+degradation, strategy_tab, quali_tab, odds_tab, midrace_tab, replay_tab, card = st.tabs(
+    ["Degradation", "Strategy", "Qualifying", "Race odds", "Mid-race", "Replay", "Model card"]
 )
 
 with degradation:
@@ -341,6 +341,92 @@ with odds_tab:
         "construction: its probabilities sit closer to 0 and 1 than reality "
         "warrants. Eleven races contain eleven wins, so P(win) is the headline "
         "number with the least evidence behind it."
+    )
+
+with midrace_tab:
+    st.header("Prediction from part-way through the race")
+    mid = load_predictions(export.MIDRACE_OUT)
+    if mid is None:
+        st.error(
+            f"No {export.MIDRACE_OUT} yet. Build it with "
+            f"`python -m f1_predict.export` -- it takes several minutes."
+        )
+        st.stop()
+
+    rows = []
+    for fraction in sorted(mid["fraction"].unique()):
+        at = mid[mid["fraction"] == fraction]
+        entry = {"Race distance": f"{fraction:.0%}"}
+        for outcome in race.OUTCOMES:
+            entry[f"Model {outcome}"] = race.brier(
+                at[outcome], at[f"actual_{outcome}"]
+            )
+            entry[f"Baseline {outcome}"] = race.brier(
+                at[f"base_{outcome}"], at[f"actual_{outcome}"]
+            )
+        rows.append(entry)
+    curve = pd.DataFrame(rows).set_index("Race distance")
+
+    st.line_chart(curve[["Model p_win", "Baseline p_win"]])
+    st.info(
+        "**The model beats the baseline at 25% and 50% distance, and loses "
+        "at 75% and 90%.** At the first two points it has lower Brier than "
+        "the position-at-that-lap baseline on P(win), P(podium) and "
+        "P(points) alike -- the first time any model in this project has "
+        "beaten its mandatory baseline. Early in a race, track position is "
+        "a weak signal, because most of the race and every pit stop is "
+        "still ahead, so a simulation that knows pace and tyre state adds "
+        "real information. Late in a race, position is nearly decisive and "
+        "the simulation can only add noise on top of it. That is the shape "
+        "of this curve, not two unrelated results."
+    )
+    st.dataframe(curve.style.format("{:.4f}"), width="stretch")
+    st.caption(
+        "Brier for each outcome against how far into the race the "
+        "prediction was made. Lower is better. At 90% distance the "
+        "baseline's P(win) Brier is exactly 0.0000, because the leader at "
+        "that point won all 11 races in 2026 -- a perfect baseline for this "
+        "season that nothing can beat."
+    )
+    st.warning(
+        "No significance test was run. Over 11 races, the 25% and 50% "
+        "margins are suggestive, not proven: treat this as a measured "
+        "result on a small sample, not a settled conclusion."
+    )
+
+    mid_event = st.selectbox(
+        "Race", sorted(mid["event_name"].unique()), key="mid_event"
+    )
+    mid_fraction = st.select_slider(
+        "Predict from",
+        options=sorted(mid["fraction"].unique()),
+        format_func=lambda f: f"{f:.0%} distance",
+    )
+    one = mid[
+        (mid["event_name"] == mid_event) & (mid["fraction"] == mid_fraction)
+    ].sort_values("position_at_n")
+    if one.empty:
+        st.info("This race was not scored at that point.")
+    else:
+        shown = one[
+            ["driver", "position_at_n", "position", "p_win", "p_podium",
+             "p_points", "base_p_win"]
+        ].copy()
+        shown.columns = [
+            "Driver", f"Position at lap {int(one['lap'].iloc[0])}", "Finished",
+            "P(win)", "P(podium)", "P(points)", "Baseline P(win)",
+        ]
+        percent = [c for c in shown.columns if c.startswith(("P(", "Baseline"))]
+        st.dataframe(
+            shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
+            width="stretch",
+        )
+    st.caption(
+        "Safety cars are still not modelled, and they matter more mid-race "
+        "than before the start: a caution can hand a stopped driver the "
+        "whole field's track position back in a single lap. That is "
+        "subsystem C2. The four points on this curve come from the same "
+        "eleven races, so it is a trend, not four independent measurements."
     )
 
 with replay_tab:

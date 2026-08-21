@@ -297,7 +297,10 @@ def race_odds(
         pit_lap=total_laps // 2,
         overtake_cost=overtake_cost,
         dnf_per_lap=race.dnf_hazard(results["finished"], total_laps),
-        noise_s=float(fitted["cv"]["mae_mean"]),
+        noise_s=model.residual_sigma(
+            model._load_training_frame("data/processed/laps.csv")[0],
+            fitted["coef"],
+        ),
     )
     out = simulated.join(grid.reindex(drivers).rename("grid")).sort_values("grid")
 

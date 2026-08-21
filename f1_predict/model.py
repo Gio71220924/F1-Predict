@@ -74,6 +74,23 @@ def fit(df: pd.DataFrame, with_temp: bool = False) -> dict:
     }
 
 
+def residual_sigma(df: pd.DataFrame, coef: dict, with_temp: bool = True) -> float:
+    """Standard deviation of the fitted model's per-lap residuals.
+
+    The race simulator samples lap-time noise as `rng.normal(0, noise_s)`,
+    which wants a standard deviation. The model card reports a
+    cross-validation MAE instead, and MAE understates a normal's standard
+    deviation by roughly 25%, so passing the MAE there makes every
+    simulation under-dispersed and therefore overconfident. That mistake was
+    already made once in this project and corrected; measured on the real
+    2026 laps the two are 0.5939 against 0.7787, a 31% understatement. This
+    exists so it cannot be made a third time by hand.
+    """
+    x, y = design_matrix(df, with_temp=with_temp)
+    residuals = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
+    return float(residuals.std())
+
+
 def cross_validate(df: pd.DataFrame, n_splits: int = 5, with_temp: bool = False) -> dict:
     """Leave-races-out cross-validation.
 

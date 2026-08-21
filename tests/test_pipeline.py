@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -1016,3 +1017,47 @@ def test_filter_laps_can_keep_short_stints():
 
     assert set(kept_clean.stint.unique()) == {1, 2}, "min_stint_laps=1 must keep it"
     assert kept_funnel["stint_length"] == 20
+
+
+def test_residual_sigma_is_a_standard_deviation_not_a_mean_absolute_error():
+    """The simulator samples rng.normal(0, noise_s) and wants a sigma.
+
+    The model card publishes a cross-validation MAE, and the two are easy to
+    confuse because both are "about how wrong a lap is". For normally
+    distributed residuals MAE is roughly 0.8 sigma, so passing the MAE makes
+    every simulated race under-dispersed and therefore overconfident about
+    who wins. That substitution was already shipped once in this project and
+    corrected; measured on the real 2026 laps the gap is 0.5939 against
+    0.7787, a 31% understatement.
+
+    This also pins `model.residual_sigma` to the formula `race.predictions`
+    computes inline, so the two cannot drift apart.
+    """
+    df = _concat_clean(
+        _clean(drivers=("VER",), n_laps=40, stint_length=15, compound="MEDIUM",
+               base=90.0, deg=0.04, fuel=0.05),
+        _clean(drivers=("NOR",), n_laps=40, stint_length=15, compound="MEDIUM",
+               base=95.0, deg=0.04, fuel=0.05),
+    )
+    # The fixture is noiseless, so an unmodified fit leaves residuals of
+    # about 1e-15 and the sigma-versus-MAE comparison below measures nothing
+    # but floating-point dust. Add real scatter, then recompute the baseline
+    # and delta the fit reads.
+    rng = np.random.default_rng(11)
+    df["lap_seconds"] = df["lap_seconds"] + rng.normal(0.0, 0.5, len(df))
+    df = data.add_baseline(df.drop(columns=["baseline", "delta"]))
+
+    fitted = model.fit(df, with_temp=False)
+    coef = fitted["coef"]
+
+    sigma = model.residual_sigma(df, coef, with_temp=False)
+
+    # The same expression race.predictions runs inline. If either side is
+    # edited without the other, this fails.
+    x, y = model.design_matrix(df, with_temp=False)
+    inline = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
+    assert sigma == pytest.approx(float(inline.std()))
+
+    # And it must not be the mean absolute error, which is smaller.
+    mae = float(np.abs(inline).mean())
+    assert sigma > mae, "sigma collapsed to or below the MAE"

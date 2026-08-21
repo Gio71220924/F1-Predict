@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from f1_predict import export, model, quali, race, replay, strategy
+from f1_predict import export, model, predict, quali, race, replay, strategy
 
 LAPS_CSV = "data/processed/laps.csv"
 
@@ -84,8 +84,9 @@ def degradation_loss(compound, age, temp_delta):
     )
 
 
-degradation, strategy_tab, quali_tab, odds_tab, midrace_tab, replay_tab, card = st.tabs(
-    ["Degradation", "Strategy", "Qualifying", "Race odds", "Mid-race", "Replay", "Model card"]
+degradation, next_tab, strategy_tab, quali_tab, odds_tab, midrace_tab, replay_tab, card = st.tabs(
+    ["Degradation", "Next race", "Strategy", "Qualifying", "Race odds",
+     "Mid-race", "Replay", "Model card"]
 )
 
 with degradation:
@@ -119,6 +120,118 @@ with degradation:
             "The three compound lines sit close together and their order is not "
             "meaningful here. The Model card explains why."
         )
+
+# Reading a live weekend hits the network, so it runs behind a button rather
+# than on every rerun, and the result is cached per round.
+@st.cache_data(show_spinner=False)
+def run_forward_quali(round_no):
+    return predict.quali_order(2026, int(round_no))
+
+
+@st.cache_data(show_spinner=False)
+def run_forward_race(round_no):
+    return predict.race_odds(2026, int(round_no))
+
+
+with next_tab:
+    st.header("Predict a weekend that has not happened yet")
+    st.caption(
+        "Every other tab is retrospective: it scores how well a model would "
+        "have predicted a race, against that race's own result. This one "
+        "reads only sessions that have already run and forecasts the ones "
+        "that have not. The round being predicted is excluded from the "
+        "training history, so pointing it at a completed race gives an "
+        "honest holdout rather than a lookup."
+    )
+
+    round_no = st.number_input(
+        "Round", min_value=1, max_value=24, value=12, step=1,
+        help="12 is the Dutch Grand Prix. A round whose sessions have not "
+             "run yet will say so rather than guess.",
+    )
+    # Nested rather than guarded by st.stop(): st.stop() halts the whole
+    # script, so a weekend with no data yet would blank every tab after this
+    # one instead of just this one.
+    if st.button("Run prediction", type="primary"):
+        try:
+            order, meta = run_forward_quali(round_no)
+        except Exception as exc:  # noqa: BLE001 - a future session is not an error
+            st.warning(f"No qualifying prediction available yet. {exc}")
+        else:
+            st.subheader(f"{meta['event']} -- predicted qualifying order")
+            st.info(
+                "**Rank by raw practice pace is the recommendation.** "
+                "Measured leave-one-race-out over 11 rounds it missed by 1.48 "
+                "places, against 2.19 for the Ridge model built on top of it. "
+                "The model column is shown for comparison, not as the answer."
+            )
+            st.caption(
+                f"Pace read from {meta['primary_session']}. Sessions used: "
+                f"{', '.join(meta['sessions_used'])}. Unavailable: "
+                f"{', '.join(meta['unavailable']) or 'none'}. Training "
+                f"history: {meta['history_rounds']} completed rounds, this "
+                f"one excluded."
+            )
+            shown = order[
+                ["driver", "baseline_position", "model_position", "gap_primary"]
+            ].copy()
+            shown.columns = ["Driver", "Predicted (pace)", "Model", "Gap to best"]
+            st.dataframe(
+                shown.set_index("Driver").style.format({"Gap to best": "{:.3%}"}),
+                width="stretch",
+            )
+            if meta["n_imputed"]:
+                st.caption(
+                    f"{meta['n_imputed']} of {meta['n_drivers']} drivers set "
+                    f"no lap in {meta['primary_session']} and were filled "
+                    f"from elsewhere. F1 requires teams to run rookies in "
+                    f"FP1, and those drivers never qualify, so this order can "
+                    f"be longer than the real grid -- Hungary predicts 27 "
+                    f"where 22 qualified."
+                )
+
+        try:
+            odds, race_meta = run_forward_race(round_no)
+        except Exception as exc:  # noqa: BLE001 - qualifying may not have run yet
+            st.warning(f"No race odds yet. {exc}")
+        else:
+            st.subheader(f"{race_meta['event']} -- race outcome probabilities")
+            st.info(
+                "**The grid table is the better bet.** A lookup of what each "
+                "grid slot has historically converted to beat this simulation "
+                "on all three outcomes across 11 races. Where the two "
+                "disagree, trust the table."
+            )
+            st.caption(
+                f"{race_meta['total_laps']} scheduled laps, grid from "
+                f"qualifying, pace from {race_meta['primary_session']}. Tyre "
+                f"model fitted on rounds {race_meta['tyre_model_rounds']}, "
+                f"excluding this one."
+            )
+            columns = ["driver", "grid"] + [
+                c for outcome in race.OUTCOMES
+                for c in (outcome, f"base_{outcome}")
+            ]
+            table = odds[columns].copy()
+            table.columns = [
+                "Driver", "Grid", "Sim P(win)", "Table P(win)",
+                "Sim P(podium)", "Table P(podium)", "Sim P(points)",
+                "Table P(points)",
+            ]
+            percent = [c for c in table.columns if "P(" in c]
+            st.dataframe(
+                table.set_index("Driver").style.format(
+                    {c: "{:.1%}" for c in percent}
+                ),
+                width="stretch",
+            )
+            st.caption(
+                "Safety cars are not modelled, so the simulation is "
+                "overconfident by construction. Neither number is a betting "
+                "tip: eleven races is a small sample and no significance test "
+                "stands behind any of it."
+            )
+
 
 with strategy_tab:
     st.header("Which strategy finishes first?")

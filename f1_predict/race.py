@@ -115,10 +115,24 @@ def simulate_once(
 
     `state` seeds the simulation part-way through a race instead of from
     the grid. It is a frame indexed by driver with columns `position`,
-    `elapsed_s`, `compound`, `tyre_age`, and `pitted`, describing each
-    driver as of the end of lap `start_lap`; the loop then runs laps
-    `start_lap + 1` through `total_laps`. `state is None` is the
+    `elapsed_s`, `compound`, `tyre_age`, `pitted`, and `laps_completed`,
+    describing each driver as of the end of lap `start_lap`; the loop then
+    runs laps `start_lap + 1` through `total_laps`. `state is None` is the
     from-the-grid case and behaves exactly as before.
+
+    `elapsed_s` alone is not comparable across drivers unless every driver
+    was measured at the same lap count. A driver kept in `state` while a
+    lap or more behind (see `midrace.MAX_LAPS_DOWN`) has its `elapsed_s`
+    measured at ITS OWN last completed lap, which is fewer laps than a
+    driver level with `start_lap` -- roughly one lap time short for every
+    lap of gap. Cumulative time is therefore seeded as
+    `elapsed_s + (start_lap - laps_completed) * pace`, projecting each
+    driver forward onto the same lap count `start_lap` before comparing
+    them. A driver level on laps has a zero correction term and is
+    unaffected. Without this, a driver a lap down enters the simulation
+    roughly one lap time ahead of the field for no reason but having
+    covered less ground, which the overtake-cost constraint cannot
+    recognise as fake.
     """
     rng = rng if rng is not None else np.random.default_rng()
 
@@ -134,7 +148,16 @@ def simulate_once(
         pits_at = {driver: pit_lap for driver in order}
     else:
         order = list(state["position"].sort_values().index)
-        cumulative = {d: float(state.loc[d, "elapsed_s"]) for d in order}
+        # A driver behind on laps has elapsed_s measured at their own,
+        # earlier lap count -- project them forward onto start_lap before
+        # comparing. laps_completed is read directly with no default: a
+        # state missing it must fail loudly rather than silently seed
+        # every driver as though level on laps. See the docstring above.
+        cumulative = {
+            d: float(state.loc[d, "elapsed_s"])
+            + (start_lap - int(state.loc[d, "laps_completed"])) * float(pace[d])
+            for d in order
+        }
         compound = {d: str(state.loc[d, "compound"]) for d in order}
         tyre_age = {d: int(state.loc[d, "tyre_age"]) for d in order}
         # A driver who has already stopped is assumed to run to the end.

@@ -220,6 +220,9 @@ def _grid_state(grid):
             "compound": pd.Series("MEDIUM", index=grid.index),
             "tyre_age": pd.Series(0, index=grid.index),
             "pitted": pd.Series(False, index=grid.index),
+            # Zero laps completed, matching start_lap=0: the correction
+            # term in simulate_once's cumulative-time seeding is zero.
+            "laps_completed": pd.Series(0, index=grid.index),
         }
     )
 
@@ -270,6 +273,9 @@ def test_a_mid_race_lead_is_carried_into_the_result():
             "compound": pd.Series({"AAA": "HARD", "BBB": "HARD"}),
             "tyre_age": pd.Series({"AAA": 12, "BBB": 12}),
             "pitted": pd.Series({"AAA": True, "BBB": True}),
+            # Both level on laps at start_lap=50, so the laps_completed
+            # correction term in simulate_once is zero for both.
+            "laps_completed": pd.Series({"AAA": 50, "BBB": 50}),
         }
     )
 
@@ -305,6 +311,8 @@ def test_a_driver_who_has_not_pitted_still_has_to_stop():
             "compound": pd.Series({"AAA": "MEDIUM", "BBB": "MEDIUM"}),
             "tyre_age": pd.Series({"AAA": 20, "BBB": 20}),
             "pitted": pd.Series({"AAA": False, "BBB": True}),
+            # Both level on laps at start_lap=40.
+            "laps_completed": pd.Series({"AAA": 40, "BBB": 40}),
         }
     )
 
@@ -340,6 +348,8 @@ def test_a_worn_leader_is_overtaken_by_a_fresher_car_behind():
             "compound": pd.Series({"AAA": "MEDIUM", "BBB": "HARD"}),
             "tyre_age": pd.Series({"AAA": 30, "BBB": 2}),
             "pitted": pd.Series({"AAA": True, "BBB": True}),
+            # Both level on laps at start_lap=40.
+            "laps_completed": pd.Series({"AAA": 40, "BBB": 40}),
         }
     )
 
@@ -377,6 +387,8 @@ def test_an_already_pitted_driver_is_not_charged_a_second_stop():
             "compound": pd.Series({"AAA": "HARD", "BBB": "MEDIUM"}),
             "tyre_age": pd.Series({"AAA": 5, "BBB": 20}),
             "pitted": pd.Series({"AAA": True, "BBB": False}),
+            # Both level on laps at start_lap=20.
+            "laps_completed": pd.Series({"AAA": 20, "BBB": 20}),
         }
     )
 
@@ -390,6 +402,58 @@ def test_an_already_pitted_driver_is_not_charged_a_second_stop():
     # the simulated range. AAA, already pitted, pays nothing and overtakes
     # despite starting behind, on otherwise identical pace.
     assert out["AAA"] == 1.0
+
+
+def test_a_lapped_driver_is_not_handed_a_free_lap_of_race_time():
+    """`elapsed_s` is only comparable between drivers measured at the same
+    lap count -- `laps_completed` has to correct for the ones that were not.
+
+    `midrace.state_from_laps` deliberately keeps a driver who is up to
+    MAX_LAPS_DOWN laps behind, so as not to mistake a lapped car for a
+    retirement. That driver's `elapsed_s` is read from THEIR OWN last
+    completed lap, which is earlier than a driver level with `start_lap`
+    -- roughly one lap time (~90 s) short, for no reason but having
+    covered less ground. Measured on round 9 (British GP) at lap 47: VER,
+    one lap down, had elapsed_s 7736 s against leader LEC's 7802 s. Seeded
+    without the `laps_completed` correction, VER got P(win) 1.00 and LEC
+    0.00 -- VER actually finished P20 and LEC won the race.
+
+    LAPPED here is one lap down with elapsed_s set from the same measured
+    round-9 gap (LEC 7802 s at lap 47 against VER 7736 s, one lap down),
+    on identical pace, identical tyres, and flat coefficients, so nothing
+    but the `laps_completed` correction term can decide the order.
+    Position is set so that, uncorrected, LAPPED's already-lower
+    elapsed_s needs no overtake at all to stay in front -- reproducing
+    the bug directly rather than relying on the overtake sweep to mask
+    it.
+    """
+    pace = pd.Series({"LEVEL": 90.0, "LAPPED": 90.0})
+    grid = pd.Series({"LEVEL": 2.0, "LAPPED": 1.0})
+    state = pd.DataFrame(
+        {
+            # LAPPED reports the better on-track position, matching a
+            # state built from real, out-of-sync lap reports.
+            "position": pd.Series({"LEVEL": 2.0, "LAPPED": 1.0}),
+            # LEVEL (like LEC) is at 7800 s having completed lap 47.
+            # LAPPED (like VER) is 66 s less at 7734 s, one lap down.
+            "elapsed_s": pd.Series({"LEVEL": 7800.0, "LAPPED": 7734.0}),
+            "compound": pd.Series({"LEVEL": "HARD", "LAPPED": "HARD"}),
+            "tyre_age": pd.Series({"LEVEL": 20, "LAPPED": 20}),
+            "pitted": pd.Series({"LEVEL": True, "LAPPED": True}),
+            "laps_completed": pd.Series({"LEVEL": 47, "LAPPED": 46}),
+        }
+    )
+
+    out = race.simulate_once(
+        pace=pace, grid=grid, coef=FLAT_COEF, total_laps=52, pit_loss_s=20.0,
+        pit_lap=27, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=47, rng=np.random.default_rng(1),
+    )
+
+    # LEVEL, actually a lap ahead, must finish ahead. LAPPED must not be
+    # handed the win it never earned.
+    assert out["LEVEL"] == 1.0
+    assert out["LAPPED"] == 2.0
 
 
 def test_probabilities_sum_to_one_across_drivers():

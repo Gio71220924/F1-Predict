@@ -150,6 +150,65 @@ def test_a_null_tyre_age_is_filled_from_the_same_drivers_earlier_lap():
     )
 
 
+def test_position_is_a_unique_rank_not_the_raw_reported_field():
+    """Two drivers queried at different lap counts can report the same
+    `position` -- neither has seen the other's most recent lap.
+
+    Round 9 lap 47 has both VER and RUS reporting 3.0. Left as the raw
+    field, `state["position"].sort_values()` (in `race.simulate_once`)
+    orders the tied pair arbitrarily, and `position_baseline` records two
+    separate "P3 at lap N" observations from one race instead of one. AAA
+    and BBB both report position 3.0 here; AAA has completed more laps
+    (2 against BBB's 1, BBB being one lap down but still within
+    MAX_LAPS_DOWN), so the tie-break must put AAA ahead, and the ranks
+    coming out must be distinct.
+    """
+    frame = _laps(
+        [
+            ["AAA", 1, 3.0, "MEDIUM", 1, 1, 90.0, False],
+            ["AAA", 2, 3.0, "MEDIUM", 2, 1, 181.0, False],
+            ["BBB", 1, 3.0, "MEDIUM", 1, 1, 91.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=2)
+
+    assert sorted(state.index) == ["AAA", "BBB"]
+    assert len(set(state["position"])) == 2, "ranks must be distinct, not tied"
+    assert state.loc["AAA", "position"] < state.loc["BBB", "position"], (
+        "AAA has completed more laps than BBB and must rank ahead"
+    )
+    assert sorted(state["position"]) == [1.0, 2.0], "a dense 1..N rank"
+
+
+def test_a_row_with_an_unrecognised_compound_is_dropped_not_defaulted():
+    """A compound the tyre model has no coefficient for must be dropped,
+    not silently treated as zero degradation.
+
+    `race.simulate_once` passes `compound` into `strategy.lap_time`, which
+    does `coef.get(f"age_{compound}", 0.0)`. Before mid-race prediction
+    the simulator only ever produced MEDIUM or HARD, so that default was
+    unreachable; a state built from real FastF1 laps can carry a null
+    Compound (about round 11 lap 35's PER) or a wet-weather compound, and
+    the default would silently zero out degradation with no warning. BBB's
+    only lap has a null compound and must be dropped entirely rather than
+    kept with a guessed value, and the drop must be counted so a caller
+    can report the exclusion.
+    """
+    frame = _laps(
+        [
+            ["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False],
+            ["BBB", 1, 2.0, None, 1, 1, 93.0, False],
+        ]
+    )
+
+    state = midrace.state_from_laps(frame, lap=1)
+
+    assert "BBB" not in state.index
+    assert "AAA" in state.index
+    assert state.attrs["n_compound_dropped"] == 1
+
+
 def test_position_baseline_counts_conversion_by_track_position():
     """The table the simulation has to beat.
 
@@ -198,6 +257,9 @@ def test_the_simulation_converges_on_the_leader_near_the_end():
             "compound": pd.Series({"AAA": "HARD", "BBB": "HARD", "CCC": "HARD"}),
             "tyre_age": pd.Series({"AAA": 10, "BBB": 10, "CCC": 10}),
             "pitted": pd.Series({"AAA": True, "BBB": True, "CCC": True}),
+            # All level on laps at start_lap=53, so the laps_completed
+            # correction in race.simulate_once is zero for all three.
+            "laps_completed": pd.Series({"AAA": 53, "BBB": 53, "CCC": 53}),
         }
     )
 

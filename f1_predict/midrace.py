@@ -12,7 +12,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from f1_predict import race
+from f1_predict import data, race
 
 STATE_COLUMNS = [
     "position", "elapsed_s", "compound", "tyre_age",
@@ -39,12 +39,51 @@ def state_from_laps(laps: pd.DataFrame, lap: int) -> pd.DataFrame:
     yet and is still racing; one who stopped several laps ago has retired.
     Conflating them would drop classified finishers from the simulation,
     which is subsystem B's `Lapped` trap in a new place.
+
+    `position` in the returned frame is NOT the raw reported position.
+    Each driver's reported position is read from their own last seen lap,
+    and drivers are queried at different lap counts (a lapped driver's
+    last lap is earlier than a leader's), so two drivers can legitimately
+    report the same number -- both "P3" -- with neither having seen the
+    other's most recent lap. Left as the raw field, duplicate values make
+    `position.sort_values()` (in `race.simulate_once`) order the tied
+    drivers arbitrarily, and make `position_baseline` count them as two
+    separate "P3 at lap N" observations from a single race. It is
+    replaced below with a dense, unique 1..N rank: the reported position
+    first, ties broken by more laps completed (further into the race, so
+    less stale), then by lower elapsed time.
+
+    A lap row whose `compound` is not one of the dry compounds the tyre
+    model has a coefficient for (`data.DRY_COMPOUNDS`) is dropped rather
+    than kept with a guessed value -- see the comment at that filter.
     """
     seen = laps[laps["lap_number"] <= lap]
     if seen.empty:
-        return pd.DataFrame(
+        empty = pd.DataFrame(
             columns=STATE_COLUMNS, index=pd.Index([], name="driver")
         )
+        empty.attrs["n_compound_dropped"] = 0
+        return empty
+
+    # An unrecognised compound has no tyre-degradation coefficient:
+    # strategy.lap_time does coef.get(f"age_{compound}", 0.0), so a
+    # compound the model has never seen -- null (FastF1 leaves Compound
+    # unset on some laps) or a wet-weather compound -- would silently
+    # default to zero degradation with no warning. Unlike a null
+    # TyreLife, which has the documented ffill fallback below, there is
+    # no substitute compound to invent here, so the row is dropped
+    # instead. The count travels on the returned frame's `.attrs` so a
+    # caller can report the exclusion, mirroring how the rest of this
+    # subsystem accounts for what it drops.
+    dry = seen["compound"].isin(data.DRY_COMPOUNDS)
+    n_compound_dropped = int((~dry).sum())
+    seen = seen[dry]
+    if seen.empty:
+        empty = pd.DataFrame(
+            columns=STATE_COLUMNS, index=pd.Index([], name="driver")
+        )
+        empty.attrs["n_compound_dropped"] = n_compound_dropped
+        return empty
 
     # TyreLife is null on some laps. Carry a driver's last known age
     # forward rather than dropping the row and losing them from the state
@@ -64,7 +103,18 @@ def state_from_laps(laps: pd.DataFrame, lap: int) -> pd.DataFrame:
     latest["laps_completed"] = seen.groupby("driver")["lap_number"].max()
 
     running = latest[latest["laps_completed"] >= lap - MAX_LAPS_DOWN]
-    return running[STATE_COLUMNS].sort_values("position")
+
+    # Dense unique rank -- see the docstring for why the raw `position`
+    # field cannot be used directly.
+    ordered = running.sort_values(
+        ["position", "laps_completed", "elapsed_s"],
+        ascending=[True, False, True],
+    ).copy()
+    ordered["position"] = np.arange(1, len(ordered) + 1, dtype=float)
+
+    result = ordered[STATE_COLUMNS]
+    result.attrs["n_compound_dropped"] = n_compound_dropped
+    return result
 
 
 def position_baseline(observations: pd.DataFrame) -> pd.DataFrame:

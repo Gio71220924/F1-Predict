@@ -31,6 +31,20 @@ log = logging.getLogger(__name__)
 FEATURES_CSV = "data/processed/quali_features.csv"
 
 
+def training_history(history: pd.DataFrame, round_no: int) -> pd.DataFrame:
+    """The completed rounds a prediction for `round_no` may learn from.
+
+    For a future round this drops nothing, because that round is not in the
+    feature table yet. For a round that has already run it is the difference
+    between a forecast and a lookup: left in, both the Ridge fit and the
+    driver-form average would read the very qualifying being predicted.
+
+    Pure and separate so the guarantee is testable. Buried inside a function
+    that needs the network, it could only be trusted, not checked.
+    """
+    return history[history["round"] != round_no]
+
+
 def driver_form(history: pd.DataFrame) -> pd.DataFrame:
     """Each driver's mean qualifying gap across every round in `history`.
 
@@ -202,7 +216,14 @@ def quali_order(
         )
 
     primary = sessions.pick_primary(list(laps), wet)
-    history = pd.read_csv(csv_path)
+    # Never train on the round being predicted. For a future round this is a
+    # no-op, because that round is not in the feature table yet. For a round
+    # that has already run it is the difference between a forecast and a
+    # lookup: without it, both the Ridge fit and the driver-form average
+    # would read the very qualifying being predicted, and the numbers would
+    # come back flattering and wrong. Testing this path on a completed round
+    # is the first thing anyone would do.
+    history = training_history(pd.read_csv(csv_path), round_no)
     frame = weekend_features(
         laps,
         primary,
@@ -270,7 +291,14 @@ def race_odds(
         fallback=int(history.groupby("round")["lap_number"].max().median()),
     )
 
-    fitted = model.load()
+    # Refit rather than model.load(): the shipped model was fitted across
+    # every completed round, so for a round that has already run it would
+    # carry that round's own laps into its own prediction. `past` already
+    # excludes it. For a future round the two are equivalent, and the refit
+    # costs a few seconds.
+    all_laps, _ = model._load_training_frame("data/processed/laps.csv")
+    train_laps = all_laps[all_laps["round"] != round_no]
+    fitted = model.fit(train_laps, with_temp=True)
     results = pd.concat(
         [sessions.race_result(year, r).assign(round=r) for r in past],
         ignore_index=True,
@@ -297,10 +325,7 @@ def race_odds(
         pit_lap=total_laps // 2,
         overtake_cost=overtake_cost,
         dnf_per_lap=race.dnf_hazard(results["finished"], total_laps),
-        noise_s=model.residual_sigma(
-            model._load_training_frame("data/processed/laps.csv")[0],
-            fitted["coef"],
-        ),
+        noise_s=model.residual_sigma(train_laps, fitted["coef"]),
     )
     out = simulated.join(grid.reindex(drivers).rename("grid")).sort_values("grid")
 
@@ -310,6 +335,7 @@ def race_odds(
         "total_laps": total_laps,
         "overtake_cost": overtake_cost,
         "history_rounds": past,
+        "tyre_model_rounds": sorted(int(r) for r in train_laps["round"].unique()),
         "n_drivers": len(drivers),
     }
     return out.reset_index().rename(columns={"index": "driver"}), meta

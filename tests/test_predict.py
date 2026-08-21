@@ -121,3 +121,26 @@ def test_the_recommended_order_is_raw_pace_not_the_model():
     assert out.loc["BBB", "baseline_position"] == 1.0
     assert out.loc["CCC", "baseline_position"] == 2.0
     assert out.loc["AAA", "baseline_position"] == 3.0
+
+
+def test_the_round_being_predicted_is_never_trained_on():
+    """Otherwise a forecast quietly becomes a lookup.
+
+    quali_order fits Ridge on the feature table and reads driver form from
+    it. If the round being predicted is still in that table, both read the
+    very qualifying they are predicting, and the result comes back
+    flattering and wrong with no sign that anything went astray. Predicting
+    a completed round is the first thing anyone would try, so this is the
+    path most likely to be exercised and least likely to be questioned.
+    """
+    history = _history(
+        [[9, "AAA", 0.001], [10, "AAA", 0.002], [11, "AAA", 0.999]]
+    )
+
+    past = predict.training_history(history, round_no=11)
+    assert sorted(past["round"]) == [9, 10]
+    assert 0.999 not in set(past["quali_gap_pct"]), "the target round leaked"
+
+    # A round that has not happened is not in the table, so nothing is lost.
+    future = predict.training_history(history, round_no=12)
+    assert len(future) == len(history)

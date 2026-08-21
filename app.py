@@ -369,19 +369,20 @@ with midrace_tab:
 
     st.line_chart(curve[["Model p_win", "Baseline p_win"]])
     st.info(
-        "**The model beats the baseline at 25% and 50% distance; the "
-        "baseline beats the model on all three outcomes at 75%; at 90% the "
-        "baseline clearly leads on P(win) and P(podium), while P(points) "
-        "is a dead heat too close to call from 11 races.** At the first "
-        "two points it has lower Brier than the position-at-that-lap "
-        "baseline on P(win), P(podium) and P(points) alike -- the first "
-        "time any model in this project has beaten its mandatory "
-        "baseline. Early in a race, track position is "
-        "a weak signal, because most of the race and every pit stop is "
-        "still ahead, so a simulation that knows pace and tyre state adds "
-        "real information. Late in a race, position is nearly decisive and "
-        "the simulation can only add noise on top of it. That is the shape "
-        "of this curve, not two unrelated results."
+        "**The model beats the baseline at 25% and 50% distance on all "
+        "three outcomes -- the first time any model in this project has "
+        "beaten its mandatory baseline. At 75% and 90% distance the "
+        "baseline still leads on P(win) and P(podium), but the model wins "
+        "on P(points) at both of those fractions too.** Early in a race, "
+        "track position is a weak signal, because most of the race and "
+        "every pit stop is still ahead, so a simulation that knows pace "
+        "and tyre state adds real information. Late in a race, position "
+        "becomes strongly informative about who is about to win or reach "
+        "the podium -- at 90% distance the leader won all 11 races in "
+        "2026, a baseline no model can beat -- but it does not settle the "
+        "wider top-ten question as tightly, and the simulation keeps "
+        "adding real information there through the whole curve rather "
+        "than only noise on top of a decided position."
     )
     st.dataframe(curve.style.format("{:.4f}"), width="stretch")
     st.caption(
@@ -392,7 +393,7 @@ with midrace_tab:
         "season that nothing can beat."
     )
     st.warning(
-        "No significance test was run. Over 11 races, the 25% and 50% "
+        "No significance test was run. Over 11 races, all of these "
         "margins are suggestive, not proven: treat this as a measured "
         "result on a small sample, not a settled conclusion."
     )

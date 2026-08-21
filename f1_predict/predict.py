@@ -327,7 +327,18 @@ def race_odds(
         dnf_per_lap=race.dnf_hazard(results["finished"], total_laps),
         noise_s=model.residual_sigma(train_laps, fitted["coef"]),
     )
-    out = simulated.join(grid.reindex(drivers).rename("grid")).sort_values("grid")
+    # The grid-slot lookup table, shown beside the simulation because it
+    # beat it on all three outcomes across 11 races. The qualifying path
+    # already leads with its baseline; showing only the simulation here
+    # would recommend the weaker answer for the race while recommending the
+    # stronger one for qualifying, which is not a defensible pair.
+    table = race.grid_baseline(results)
+    out = simulated.join(grid.reindex(drivers).rename("grid"))
+    for driver in out.index:
+        slot = race.baseline_for(table, float(out.loc[driver, "grid"]))
+        for outcome in race.OUTCOMES:
+            out.loc[driver, f"base_{outcome}"] = float(slot[outcome])
+    out = out.sort_values("grid")
 
     meta = {
         "event": str(event.EventName),
@@ -382,8 +393,10 @@ def _report(year: int, round_no: int) -> None:
     print(f"\n{meta['event']} -- race outcome probabilities")
     print(f"{meta['total_laps']} scheduled laps, grid from qualifying")
     print(
-        "A grid-slot lookup table beat this simulation on all three outcomes "
-        "over 11 races. Read these as the weaker of the two available answers."
+        "`base_` columns are a lookup table of what each grid slot has "
+        "historically converted to. It beat this simulation on all three "
+        "outcomes across 11 races, so where they disagree the table is the "
+        "better bet and the simulation is shown for comparison."
     )
     print(odds.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 

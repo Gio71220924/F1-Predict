@@ -79,6 +79,29 @@ def best_quali_time(results: pd.DataFrame) -> pd.Series:
     return best.dropna()
 
 
+def require_published(frame, year: int, round_no: int, name: str):
+    """Raise unless a session's classification has actually been published.
+
+    FastF1's `Session.load()` returns WITHOUT raising for a session whose
+    timing data does not exist yet, and `session.results` is then an empty
+    frame -- while `session.laps` raises for the same session. So half this
+    module reported a missing session and half returned an empty table that
+    reads as "a race with no drivers".
+
+    That is the failure this project guards against everywhere else: a
+    result built from nothing must not look like one built from something.
+    Measured on the 2026 Dutch Grand Prix within an hour of the flag, when
+    the race had run but the archive had not caught up.
+    """
+    if len(frame) == 0:
+        raise ValueError(
+            f"{year} round {round_no} {name} has no published classification "
+            f"yet. The session may not have run, or the timing archive may "
+            f"not have caught up with it."
+        )
+    return frame
+
+
 def quali_result(year: int, round_no: int) -> pd.DataFrame:
     """Official qualifying classification plus each driver's gap to pole."""
     logging.getLogger("fastf1").setLevel(logging.ERROR)
@@ -88,6 +111,7 @@ def quali_result(year: int, round_no: int) -> pd.DataFrame:
         warnings.simplefilter("ignore")
         session.load(telemetry=False, weather=False, messages=False)
 
+    require_published(session.results, year, round_no, "qualifying")
     best = best_quali_time(session.results)
     pole = best.min()
     positions = session.results.set_index("Abbreviation")["Position"]
@@ -149,7 +173,7 @@ def race_result(year: int, round_no: int) -> pd.DataFrame:
         warnings.simplefilter("ignore")
         session.load(telemetry=False, weather=False, messages=False)
 
-    results = session.results
+    results = require_published(session.results, year, round_no, "race")
     return pd.DataFrame(
         {
             "driver": results["Abbreviation"].values,

@@ -245,3 +245,23 @@ def test_cross_validate_scores_exactly_what_predictions_returns():
     assert scores["model"] == quali.score(out, out["pred_position"])
     assert scores["baseline"] == quali.score(out, out["baseline_position"])
     assert scores["n_rows"] == len(out)
+
+
+def test_an_unpublished_session_is_reported_rather_than_returned_empty():
+    """FastF1's load() does not raise for a session with no data yet.
+
+    `session.results` comes back as an empty frame while `session.laps`
+    raises for the very same session, so half this module reported a missing
+    session and half returned a table that reads as a race with no drivers.
+    A caller cannot tell those apart, and `race.predictions` and
+    `midrace.predictions` call this for every round of a season.
+
+    Seen on the 2026 Dutch Grand Prix within an hour of the chequered flag,
+    when the race had run but the timing archive had not caught up.
+    """
+    empty = pd.DataFrame(columns=["Abbreviation", "Position", "Status"])
+    with pytest.raises(ValueError, match="no published classification"):
+        sessions.require_published(empty, 2026, 12, "race")
+
+    populated = pd.DataFrame({"Abbreviation": ["AAA"], "Position": [1.0]})
+    assert sessions.require_published(populated, 2026, 11, "race") is populated

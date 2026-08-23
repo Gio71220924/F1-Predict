@@ -168,9 +168,9 @@ with next_tab:
             st.caption(
                 f"Pace read from {meta['primary_session']}. Sessions used: "
                 f"{', '.join(meta['sessions_used'])}. Unavailable: "
-                f"{', '.join(meta['unavailable']) or 'none'}. Training "
-                f"history: {meta['history_rounds']} completed rounds, this "
-                f"one excluded."
+                f"{', '.join(meta['unavailable']) or 'none'}. Trained on "
+                f"{meta['history_rounds']} rounds that ran BEFORE this one; "
+                f"later rounds are excluded too, not just this one."
             )
             shown = order[
                 ["driver", "baseline_position", "model_position", "gap_primary"]
@@ -202,6 +202,13 @@ with next_tab:
                 "on all three outcomes across 11 races. Where the two "
                 "disagree, trust the table."
             )
+            if race_meta["dropped_no_pace"]:
+                st.caption(
+                    f"Dropped for want of practice pace: "
+                    f"{', '.join(race_meta['dropped_no_pace'])}. They have a "
+                    f"grid slot but set no lap in "
+                    f"{race_meta['primary_session']}."
+                )
             st.caption(
                 f"{race_meta['total_laps']} scheduled laps, grid from "
                 f"qualifying, pace from {race_meta['primary_session']}. Tyre "

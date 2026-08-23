@@ -123,24 +123,37 @@ def test_the_recommended_order_is_raw_pace_not_the_model():
     assert out.loc["AAA", "baseline_position"] == 3.0
 
 
-def test_the_round_being_predicted_is_never_trained_on():
-    """Otherwise a forecast quietly becomes a lookup.
+def test_only_earlier_rounds_are_trained_on():
+    """Excluding just the target round is the same thing only for the latest.
 
-    quali_order fits Ridge on the feature table and reads driver form from
-    it. If the round being predicted is still in that table, both read the
-    very qualifying they are predicting, and the result comes back
-    flattering and wrong with no sign that anything went astray. Predicting
-    a completed round is the first thing anyone would try, so this is the
-    path most likely to be exercised and least likely to be questioned.
+    An earlier version filtered `round != round_no`, which is correct when
+    the target is the most recent round and quietly wrong for every other
+    one: predicting round 5 with a full season on disk trained on rounds 7
+    to 11, none of which had been run when round 5 was. Both the CLI and the
+    app accept any round number, and checking the forecaster against a
+    mid-season race is the obvious first thing to try, so the wrong answer
+    would have been the one most people saw.
+
+    The mid-season case is the whole point of this test. A test that only
+    checks the latest round passes against both the right rule and the wrong
+    one.
     """
     history = _history(
-        [[9, "AAA", 0.001], [10, "AAA", 0.002], [11, "AAA", 0.999]]
+        [[r, "AAA", 0.001 * r] for r in (1, 2, 3, 4, 5, 7, 8, 9, 10, 11)]
     )
 
-    past = predict.training_history(history, round_no=11)
-    assert sorted(past["round"]) == [9, 10]
-    assert 0.999 not in set(past["quali_gap_pct"]), "the target round leaked"
+    # Mid-season: later rounds exist and must not be reachable.
+    mid = predict.training_history(history, round_no=5)
+    assert sorted(mid["round"]) == [1, 2, 3, 4], "a later round leaked in"
 
-    # A round that has not happened is not in the table, so nothing is lost.
+    # The latest completed round: every other round is genuinely earlier.
+    latest = predict.training_history(history, round_no=11)
+    assert sorted(latest["round"]) == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+
+    # A round that has not happened: nothing is lost.
     future = predict.training_history(history, round_no=12)
     assert len(future) == len(history)
+
+    # And the target itself is gone in every case that contains it.
+    assert 5 not in set(mid["round"])
+    assert 11 not in set(latest["round"])

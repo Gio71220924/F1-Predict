@@ -34,15 +34,21 @@ FEATURES_CSV = "data/processed/quali_features.csv"
 def training_history(history: pd.DataFrame, round_no: int) -> pd.DataFrame:
     """The completed rounds a prediction for `round_no` may learn from.
 
-    For a future round this drops nothing, because that round is not in the
-    feature table yet. For a round that has already run it is the difference
-    between a forecast and a lookup: left in, both the Ridge fit and the
-    driver-form average would read the very qualifying being predicted.
+    Strictly EARLIER rounds, not merely "every round except this one". An
+    earlier draft excluded only the target, which is the same thing when the
+    target is the latest round and quietly wrong for any other: predicting
+    round 5 with a full season on disk trained on rounds 7 to 11, which had
+    not been run when round 5 was. Both the CLI and the app accept any round
+    number, and checking the forecaster against a mid-season race is exactly
+    the sort of thing someone would do first.
+
+    For a future round this still drops nothing, because every completed
+    round precedes it.
 
     Pure and separate so the guarantee is testable. Buried inside a function
     that needs the network, it could only be trusted, not checked.
     """
-    return history[history["round"] != round_no]
+    return history[history["round"] < round_no]
 
 
 def driver_form(history: pd.DataFrame) -> pd.DataFrame:
@@ -144,6 +150,12 @@ def fit_quali_model(history: pd.DataFrame):
     2.69 places unscaled against 2.19 scaled.
     """
     usable = history.dropna(subset=quali.FEATURES + ["quali_gap_pct"])
+    if usable.empty:
+        raise ValueError(
+            "no earlier round has usable qualifying features, so there is "
+            "nothing to fit. This is the expected state for round 1 of a "
+            "season, where no history exists yet."
+        )
     regressor = make_pipeline(StandardScaler(), RidgeCV(alphas=quali.ALPHAS))
     regressor.fit(
         usable[quali.FEATURES].to_numpy(dtype=float),
@@ -277,6 +289,11 @@ def race_odds(
 
     grid = sessions.quali_result(year, round_no).set_index("driver")["quali_position"]
     drivers = [d for d in grid.index if d in pace.index]
+    # Counted, not silently swallowed. quali_order fills a driver with no
+    # primary-session lap and flags it; here there is no sensible fill for a
+    # race pace, so the driver is dropped -- but a table twenty rows long
+    # where the grid held twenty-one must say which one is missing.
+    dropped = [d for d in grid.index if d not in pace.index]
     if len(drivers) < 2:
         raise ValueError(
             f"only {len(drivers)} drivers have both a grid slot and practice "
@@ -284,7 +301,15 @@ def race_odds(
         )
 
     history = pd.read_csv("data/processed/laps.csv")
-    past = sorted(int(r) for r in history["round"].unique() if int(r) != round_no)
+    # Strictly earlier, for the reason training_history gives: a later round
+    # had not happened when this one was run, so its laps, reliability and
+    # passing rates are not knowable here.
+    past = sorted(int(r) for r in history["round"].unique() if int(r) < round_no)
+    if not past:
+        raise ValueError(
+            f"no completed round precedes {year} round {round_no}, so there "
+            f"is no reliability, overtaking or tyre history to simulate from."
+        )
     total_laps = race._scheduled_laps(
         year,
         round_no,
@@ -297,7 +322,7 @@ def race_odds(
     # excludes it. For a future round the two are equivalent, and the refit
     # costs a few seconds.
     all_laps, _ = model._load_training_frame("data/processed/laps.csv")
-    train_laps = all_laps[all_laps["round"] != round_no]
+    train_laps = all_laps[all_laps["round"] < round_no]
     fitted = model.fit(train_laps, with_temp=True)
     results = pd.concat(
         [sessions.race_result(year, r).assign(round=r) for r in past],
@@ -346,6 +371,7 @@ def race_odds(
         "total_laps": total_laps,
         "overtake_cost": overtake_cost,
         "history_rounds": past,
+        "dropped_no_pace": dropped,
         "tyre_model_rounds": sorted(int(r) for r in train_laps["round"].unique()),
         "n_drivers": len(drivers),
     }
@@ -398,6 +424,13 @@ def _report(year: int, round_no: int) -> None:
         "outcomes across 11 races, so where they disagree the table is the "
         "better bet and the simulation is shown for comparison."
     )
+    if meta["dropped_no_pace"]:
+        print(
+            f"Dropped for want of practice pace: "
+            f"{', '.join(meta['dropped_no_pace'])}. They have a grid slot but "
+            f"set no lap in {meta['primary_session']}, and a race pace cannot "
+            f"be invented for them."
+        )
     print(odds.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
 

@@ -650,46 +650,64 @@ def test_the_safety_car_switched_off_changes_nothing():
 
 
 def test_a_safety_car_bunches_the_field():
-    """Checked on race time, not on finishing order.
+    """The order itself has to depend on compression having run.
 
-    An order can be unchanged by a compression that is nonetheless wrong, so
-    asserting on positions would let a broken implementation pass. Two
-    drivers five seconds a lap apart, no noise and no retirements: with a
-    certain safety car their gap at the flag must be far smaller than
-    without one.
+    If `compress` is never called, called against the wrong reference
+    driver, or applied to the wrong pair, the simulator would silently
+    ignore safety cars entirely while an experiment built to measure their
+    effect keeps reporting numbers -- every downstream comparison between
+    "safety car on" and "safety car off" would then be measuring nothing.
+
+    FAST is genuinely quicker (90.0s vs 91.0s a lap) but is seeded, via
+    `state`, 25 seconds behind SLOW in elapsed race time -- both level on
+    laps, both already pitted so no stop can intervene, no noise and no
+    retirements so nothing but pace and compression can move the gap. Over
+    the 20 laps that remain, FAST's pace advantage alone (at most 20
+    seconds) cannot close a 25-second deficit: with the safety car off,
+    SLOW must still be classified ahead at the flag. With a certain safety
+    car (`sc_per_lap=1.0`), the period -- however long the four measured
+    durations draw it, 4 to 14 laps -- ends with FAST's remaining deficit
+    cut to a quarter, small enough that FAST's pace closes it before the
+    flag: FAST must be classified ahead instead. Checked over 20 seeds so
+    the result does not depend on which duration happened to be drawn.
     """
+    pace = pd.Series({"SLOW": 91.0, "FAST": 90.0})
+    grid = pd.Series({"SLOW": 1.0, "FAST": 2.0})
+    coef = {"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041}
+    state = pd.DataFrame(
+        {
+            "position": pd.Series({"SLOW": 1.0, "FAST": 2.0}),
+            # FAST is 25s behind SLOW in elapsed time despite being faster.
+            "elapsed_s": pd.Series({"SLOW": 3000.0, "FAST": 3025.0}),
+            "compound": pd.Series({"SLOW": "HARD", "FAST": "HARD"}),
+            "tyre_age": pd.Series({"SLOW": 5, "FAST": 5}),
+            "pitted": pd.Series({"SLOW": True, "FAST": True}),
+            # Both level on laps, so the laps_completed correction is zero
+            # for both and cannot itself explain the outcome.
+            "laps_completed": pd.Series({"SLOW": 30, "FAST": 30}),
+        }
+    )
     common = dict(
-        pace=pd.Series({"AAA": 90.0, "BBB": 95.0}),
-        grid=pd.Series({"AAA": 1.0, "BBB": 2.0}),
-        coef={"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041},
-        total_laps=30, pit_loss_s=20.0, pit_lap=15, overtake_cost=0.25,
-        dnf_per_lap=0.0, noise_s=0.0,
+        pace=pace, grid=grid, coef=coef, total_laps=50, pit_loss_s=20.0,
+        pit_lap=1, overtake_cost=0.25, dnf_per_lap=0.0, noise_s=0.0,
+        state=state, start_lap=30,
     )
 
-    # simulate_once returns positions, so the compression itself is tested
-    # directly in tests/test_safety.py. What this test guards is the
-    # plumbing: that sc_per_lap actually reaches it. A certain safety car
-    # must consume draws that a switched-off one does not, so the two runs
-    # cannot come out of the same seed identically -- if they do, the
-    # compression never fired and the switch is decorative.
-    calm = race.simulate_once(rng=np.random.default_rng(5), **common)
-    caution = race.simulate_once(
-        rng=np.random.default_rng(5), sc_per_lap=1.0, **common
-    )
-
-    assert calm["AAA"] == 1.0, "the faster car still wins either way"
-    assert caution.equals(calm) is False or True  # order may legitimately match
-
-    # The load-bearing assertion: a certain safety car draws a duration,
-    # which a switched-off one never does.
-    spent = np.random.default_rng(5)
-    race.simulate_once(rng=spent, sc_per_lap=1.0, **common)
-    untouched = np.random.default_rng(5)
-    race.simulate_once(rng=untouched, sc_per_lap=0.0, **common)
-    assert spent.random() != untouched.random(), (
-        "a certain safety car consumed no extra randomness, so no period "
-        "was ever started"
-    )
+    for seed in range(20):
+        without = race.simulate_once(
+            rng=np.random.default_rng(seed), sc_per_lap=0.0, **common
+        )
+        with_sc = race.simulate_once(
+            rng=np.random.default_rng(seed), sc_per_lap=1.0, **common
+        )
+        assert without["SLOW"] == 1.0, (
+            f"seed {seed}: without a safety car the 25s deficit must survive "
+            "20 laps of a 1s/lap pace advantage"
+        )
+        assert with_sc["FAST"] == 1.0, (
+            f"seed {seed}: a certain safety car must compress the deficit "
+            "enough for FAST's pace to close it before the flag"
+        )
 
 
 def test_the_hazard_is_drawn_once_per_lap_not_once_per_driver():

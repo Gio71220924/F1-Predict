@@ -217,6 +217,12 @@ def simulate_once(
                 # compares spread before a period with spread after it, so
                 # applying it every lap would collapse the field to a point.
                 safety.compress(cumulative, order)
+            # A period still running when the race ends never reaches zero,
+            # so compress never fires for it. That is intentional, not an
+            # oversight: 0.25 was measured against periods that ENDED, and
+            # a period the race never finished has not produced that effect
+            # yet -- applying a whole-period compression to a partial one
+            # would overstate it.
 
         # A pass needs more than overtake_cost of cumulative advantage.
         # One adjacent sweep per lap: a car cannot gain two places in a

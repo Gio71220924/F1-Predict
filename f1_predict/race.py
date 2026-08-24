@@ -255,6 +255,55 @@ def brier(predicted: pd.Series, outcome: pd.Series) -> float:
     return float(np.mean((predicted.to_numpy(float) - outcome.to_numpy(float)) ** 2))
 
 
+def bootstrap_gap(
+    frame: pd.DataFrame,
+    model_column: str,
+    baseline_column: str,
+    actual_column: str,
+    n_boot: int = 2000,
+    seed: int = 0,
+    round_column: str = "round",
+) -> tuple[float, float, float]:
+    """A confidence interval on how much the model beats its baseline.
+
+    Returns the 2.5th and 97.5th percentiles of the Brier gap, defined as
+    baseline minus model so that a POSITIVE gap means the model is better,
+    plus the fraction of resamples in which it is better at all.
+
+    Every headline in this project is captioned "suggestive, not proven".
+    That is honest and unquantified, and the caption cannot tell a reader
+    whether a gap of 0.012 is a finding or noise. This can.
+
+    **Resampling is over races, not rows.** Drivers within one race share a
+    circuit, a set of conditions and a safety-car history, so twenty rows
+    from one race are nowhere near twenty independent observations.
+    Resampling rows would shrink the interval by roughly the square root of
+    the field size and report a confidence the data does not support -- the
+    same reason cross-validation in this project groups on race rather than
+    splitting at random. With a single race in the frame the interval
+    collapses to a point, which is the correct answer: one race carries no
+    information about how the next one would go.
+    """
+    rounds = frame[round_column].unique()
+    rng = np.random.default_rng(seed)
+    gaps = []
+    for _ in range(n_boot):
+        drawn = rng.choice(rounds, size=len(rounds), replace=True)
+        sample = pd.concat(
+            [frame[frame[round_column] == r] for r in drawn], ignore_index=True
+        )
+        gaps.append(
+            brier(sample[baseline_column], sample[actual_column])
+            - brier(sample[model_column], sample[actual_column])
+        )
+    gaps = np.array(gaps)
+    return (
+        float(np.percentile(gaps, 2.5)),
+        float(np.percentile(gaps, 97.5)),
+        float((gaps > 0).mean()),
+    )
+
+
 def grid_baseline(results: pd.DataFrame) -> pd.DataFrame:
     """Historical outcome rates for each grid slot. No simulation at all.
 

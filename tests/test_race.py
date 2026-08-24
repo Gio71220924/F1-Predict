@@ -562,3 +562,63 @@ def test_grid_baseline_falls_back_for_an_unseen_grid_slot():
     rate = race.baseline_for(race.grid_baseline(results), grid_slot=20.0)
 
     assert 0.0 <= rate["p_win"] <= 1.0
+
+
+def test_bootstrap_finds_a_real_gap_and_refuses_an_imaginary_one():
+    """The difference between "measured" and "established".
+
+    Every headline in this project is captioned "suggestive, not proven",
+    which is honest but unquantified. This puts an interval on the gap so a
+    reader can tell a real advantage from noise.
+
+    Resampling is over RACES, not rows. Drivers within one race share its
+    conditions, so resampling rows would treat twenty correlated
+    observations as twenty independent ones and return an interval far too
+    narrow -- the same reason cross-validation here groups on race.
+    """
+    # Model is right every time, baseline is wrong every time.
+    clear = pd.DataFrame(
+        {
+            "round": [1] * 4 + [2] * 4 + [3] * 4,
+            "p": [1.0] * 12,
+            "base_p": [0.0] * 12,
+            "actual": [1.0] * 12,
+        }
+    )
+    low, high, share = race.bootstrap_gap(
+        clear, "p", "base_p", "actual", n_boot=200, seed=0
+    )
+    assert low > 0.0, "a perfect advantage must not span zero"
+    assert share == pytest.approx(1.0)
+
+    # Model and baseline are identical, so the gap is exactly zero.
+    tied = clear.copy()
+    tied["base_p"] = tied["p"]
+    low, high, share = race.bootstrap_gap(
+        tied, "p", "base_p", "actual", n_boot=200, seed=0
+    )
+    assert low == pytest.approx(0.0) and high == pytest.approx(0.0)
+
+
+def test_bootstrap_resamples_races_not_rows():
+    """Row-level resampling would understate the interval.
+
+    With one race whose drivers all agree, race-level resampling can only
+    ever draw that same race, so the interval collapses to a point. Row
+    resampling would instead manufacture spread out of correlated rows and
+    report a confidence the data does not support.
+    """
+    single = pd.DataFrame(
+        {
+            "round": [1, 1, 1, 1],
+            "p": [0.9, 0.1, 0.8, 0.2],
+            "base_p": [0.5, 0.5, 0.5, 0.5],
+            "actual": [1.0, 0.0, 1.0, 0.0],
+        }
+    )
+
+    low, high, _ = race.bootstrap_gap(
+        single, "p", "base_p", "actual", n_boot=200, seed=0
+    )
+
+    assert low == pytest.approx(high), "one race cannot produce a spread"

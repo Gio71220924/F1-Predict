@@ -108,7 +108,8 @@ with degradation:
     st.line_chart(curve)
 
     st.caption(
-        f"Seconds lost versus a fresh tyre, fitted across all 11 2026 races. The "
+        f"Seconds lost versus a fresh tyre, fitted across "
+        f"{len(fitted['rounds'])} 2026 races. The "
         f"temperature slider is centred on the model's training mean of "
         f"{temp_mean:.1f} C, where the interaction contributes nothing; the further "
         f"you move from it the more you are extrapolating. Per-circuit rates are not "
@@ -159,12 +160,25 @@ with next_tab:
             st.warning(f"No qualifying prediction available yet. {exc}")
         else:
             st.subheader(f"{meta['event']} -- predicted qualifying order")
-            st.info(
-                "**Rank by raw practice pace is the recommendation.** "
-                "Measured leave-one-race-out over 11 rounds it missed by 1.48 "
-                "places, against 2.19 for the Ridge model built on top of it. "
-                "The model column is shown for comparison, not as the answer."
-            )
+            scored = load_predictions(export.QUALI_OUT)
+            if scored is None:
+                st.info(
+                    "**Rank by raw practice pace is the recommendation**, "
+                    "because it beat the model when both were measured. Run "
+                    "`python -m f1_predict.export` to see by how much."
+                )
+            else:
+                pace_score = quali.score(scored, scored["baseline_position"])
+                model_score = quali.score(scored, scored["pred_position"])
+                st.info(
+                    f"**Rank by raw practice pace is the recommendation.** "
+                    f"Measured leave-one-race-out over "
+                    f"{scored['round'].nunique()} rounds it missed by "
+                    f"{pace_score['position_mae']:.2f} places, against "
+                    f"{model_score['position_mae']:.2f} for the Ridge model "
+                    f"built on top of it. The model column is shown for "
+                    f"comparison, not as the answer."
+                )
             st.caption(
                 f"Pace read from {meta['primary_session']}. Sessions used: "
                 f"{', '.join(meta['sessions_used'])}. Unavailable: "
@@ -196,11 +210,13 @@ with next_tab:
             st.warning(f"No race odds yet. {exc}")
         else:
             st.subheader(f"{race_meta['event']} -- race outcome probabilities")
+            measured = load_predictions(export.RACE_OUT)
+            n_scored = measured["round"].nunique() if measured is not None else 0
             st.info(
-                "**The grid table is the better bet.** A lookup of what each "
-                "grid slot has historically converted to beat this simulation "
-                "on all three outcomes across 11 races. Where the two "
-                "disagree, trust the table."
+                f"**The grid table is the better bet.** A lookup of what each "
+                f"grid slot has historically converted to beat this simulation "
+                f"on all three outcomes across {n_scored or 'the scored'} "
+                f"races. Where the two disagree, trust the table."
             )
             if race_meta["dropped_no_pace"]:
                 st.caption(
@@ -233,10 +249,10 @@ with next_tab:
                 width="stretch",
             )
             st.caption(
-                "Safety cars are not modelled, so the simulation is "
-                "overconfident by construction. Neither number is a betting "
-                "tip: eleven races is a small sample and no significance test "
-                "stands behind any of it."
+                f"Safety cars are not modelled, so the simulation is "
+                f"overconfident by construction. Neither number is a betting "
+                f"tip: {n_scored or 'a dozen'} races is a small sample and no "
+                f"significance test stands behind any of it."
             )
 
 
@@ -377,7 +393,8 @@ with quali_tab:
             f"worst gap if they set nothing at all."
         )
     st.caption(
-        f"{predicted_quali['round'].nunique()} of 11 rounds appear here. A "
+        f"{predicted_quali['round'].nunique()} of "
+        f"{laps['round'].nunique()} completed rounds appear here. A "
         f"weekend whose practice ran wet has no dry pace comparable to a dry "
         f"qualifying, and is skipped rather than guessed at."
     )
@@ -487,35 +504,77 @@ with midrace_tab:
         rows.append(entry)
     curve = pd.DataFrame(rows).set_index("Race distance")
 
+    # The verdict is generated from the curve, never restated from a report.
+    # It was written out by hand once and went stale the first time a new
+    # race entered the season: the Dutch Grand Prix flipped P(points) at 90%
+    # from the model to the baseline while the sentence still claimed the
+    # model won it.
+    LABEL = {"p_win": "P(win)", "p_podium": "P(podium)", "p_points": "P(points)"}
+    won, lost = [], []
+    for fraction in sorted(mid["fraction"].unique()):
+        at = mid[mid["fraction"] == fraction]
+        beats = [
+            LABEL[o]
+            for o in race.OUTCOMES
+            if race.brier(at[o], at[f"actual_{o}"])
+            < race.brier(at[f"base_{o}"], at[f"actual_{o}"])
+        ]
+        (won if beats else lost).append((f"{fraction:.0%}", beats))
+
+    def _phrase(fraction, beats):
+        if len(beats) == len(race.OUTCOMES):
+            return f"all three at {fraction}"
+        return f"{' and '.join(beats)} at {fraction}"
+
+    if won:
+        verdict = (
+            "**The model beats the baseline on "
+            + "; ".join(_phrase(f, b) for f, b in won)
+            + ".**"
+        )
+        if lost:
+            verdict += (
+                " The baseline takes every outcome at "
+                + ", ".join(f for f, _ in lost)
+                + "."
+            )
+    else:
+        verdict = (
+            "**The baseline beats the model at every point of the race.** "
+            "That is the finding, reported rather than tuned away."
+        )
+
+    n_races = int(mid["round"].nunique())
     st.line_chart(curve[["Model p_win", "Baseline p_win"]])
     st.info(
-        "**The model beats the baseline at 25% and 50% distance on all "
-        "three outcomes -- the first time any model in this project has "
-        "beaten its mandatory baseline. At 75% and 90% distance the "
-        "baseline still leads on P(win) and P(podium), but the model wins "
-        "on P(points) at both of those fractions too.** Early in a race, "
-        "track position is a weak signal, because most of the race and "
-        "every pit stop is still ahead, so a simulation that knows pace "
-        "and tyre state adds real information. Late in a race, position "
-        "becomes strongly informative about who is about to win or reach "
-        "the podium -- at 90% distance the leader won all 11 races in "
-        "2026, a baseline no model can beat -- but it does not settle the "
-        "wider top-ten question as tightly, and the simulation keeps "
-        "adding real information there through the whole curve rather "
-        "than only noise on top of a decided position."
+        f"{verdict} Early in a race, track position is a weak signal, "
+        f"because most of the race and every pit stop is still ahead, so a "
+        f"simulation that knows pace and tyre state adds real information. "
+        f"Late in a race, position becomes strongly informative about who "
+        f"is about to win or reach the podium, and the simulation has less "
+        f"left to add on top of it."
     )
     st.dataframe(curve.style.format("{:.4f}"), width="stretch")
+
+    latest = curve.index[-1]
+    perfect = curve.loc[latest, "Baseline p_win"] == 0.0
     st.caption(
-        "Brier for each outcome against how far into the race the "
-        "prediction was made. Lower is better. At 90% distance the "
-        "baseline's P(win) Brier is exactly 0.0000, because the leader at "
-        "that point won all 11 races in 2026 -- a perfect baseline for this "
-        "season that nothing can beat."
+        f"Brier for each outcome against how far into the race the "
+        f"prediction was made. Lower is better."
+        + (
+            f" At {latest} distance the baseline's P(win) Brier is exactly "
+            f"0.0000: the leader at that point went on to win all "
+            f"{n_races} races, a baseline nothing can beat."
+            if perfect
+            else ""
+        )
     )
     st.warning(
-        "No significance test was run. Over 11 races, all of these "
-        "margins are suggestive, not proven: treat this as a measured "
-        "result on a small sample, not a settled conclusion."
+        f"No significance test was run. Over {n_races} races, all of these "
+        f"margins are suggestive, not proven: treat this as a measured "
+        f"result on a small sample, not a settled conclusion. Adding the "
+        f"Dutch Grand Prix narrowed the model's lead at 25% and 50% rather "
+        f"than widening it, which is what a margin this size can do."
     )
 
     mid_event = st.selectbox(
@@ -549,8 +608,9 @@ with midrace_tab:
         "Safety cars are still not modelled, and they matter more mid-race "
         "than before the start: a caution can hand a stopped driver the "
         "whole field's track position back in a single lap. That is "
-        "subsystem C2. The four points on this curve come from the same "
-        "eleven races, so it is a trend, not four independent measurements."
+        f"subsystem C2. The {len(curve)} points on this curve come from "
+        f"the same {n_races} races, so it is a trend, not "
+        f"{len(curve)} independent measurements."
     )
 
 with replay_tab:

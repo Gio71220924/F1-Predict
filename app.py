@@ -267,63 +267,63 @@ with strategy_tab:
             f"taken from the 2026 data, and this one is missing, so any figure shown "
             f"here would be invented."
         )
-        st.stop()
-    measured_loss, n_stops = PIT_LOSS_S[event]
-
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        total_laps = int(
-            st.number_input(
-                "Race distance (laps)", 30, 80, LAPS_BY_EVENT.get(event, 52)
-            )
-        )
-    with col_b:
-        loss = st.number_input(
-            "Pit loss (seconds)", 10.0, 40.0, float(measured_loss), step=0.5
-        )
-    with col_c:
-        temp, temp_delta = temp_control("Track temperature (C)", "strat_temp")
-
-    if n_stops < strategy.MIN_STOPS_FOR_STABLE_MEDIAN:
-        st.warning(
-            f"The {measured_loss:.2f} s default is a median over only {n_stops} "
-            f"green-flag stops, below the "
-            f"{strategy.MIN_STOPS_FOR_STABLE_MEDIAN}-stop stability threshold. "
-            f"Treat it as rough."
-        )
     else:
-        st.caption(
-            f"Default pit loss measured from {n_stops} green-flag stops in this race."
+        measured_loss, n_stops = PIT_LOSS_S[event]
+
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            total_laps = int(
+                st.number_input(
+                    "Race distance (laps)", 30, 80, LAPS_BY_EVENT.get(event, 52)
+                )
+            )
+        with col_b:
+            loss = st.number_input(
+                "Pit loss (seconds)", 10.0, 40.0, float(measured_loss), step=0.5
+            )
+        with col_c:
+            temp, temp_delta = temp_control("Track temperature (C)", "strat_temp")
+
+        if n_stops < strategy.MIN_STOPS_FOR_STABLE_MEDIAN:
+            st.warning(
+                f"The {measured_loss:.2f} s default is a median over only {n_stops} "
+                f"green-flag stops, below the "
+                f"{strategy.MIN_STOPS_FOR_STABLE_MEDIAN}-stop stability threshold. "
+                f"Treat it as rough."
+            )
+        else:
+            st.caption(
+                f"Default pit loss measured from {n_stops} green-flag stops in this race."
+            )
+
+        best_lap, best_time = strategy.best_pit_lap(
+            coef, baseline, loss, total_laps, "MEDIUM", "HARD", temp_delta=temp_delta
+        )
+        low, high = strategy.pit_window(
+            coef, baseline, loss, total_laps, "MEDIUM", "HARD", temp_delta=temp_delta
+        )
+        third = total_laps // 3
+        two_stop = strategy.simulate(
+            coef, baseline, loss, total_laps,
+            [("MEDIUM", third), ("HARD", third), ("HARD", total_laps - 2 * third)],
+            temp_delta=temp_delta,
         )
 
-    best_lap, best_time = strategy.best_pit_lap(
-        coef, baseline, loss, total_laps, "MEDIUM", "HARD", temp_delta=temp_delta
-    )
-    low, high = strategy.pit_window(
-        coef, baseline, loss, total_laps, "MEDIUM", "HARD", temp_delta=temp_delta
-    )
-    third = total_laps // 3
-    two_stop = strategy.simulate(
-        coef, baseline, loss, total_laps,
-        [("MEDIUM", third), ("HARD", third), ("HARD", total_laps - 2 * third)],
-        temp_delta=temp_delta,
-    )
-
-    left, right = st.columns(2)
-    left.metric("Best one-stop", f"{best_time:.1f} s", f"pit lap {best_lap}")
-    right.metric("Two-stop", f"{two_stop:.1f} s", f"{two_stop - best_time:+.1f} s")
-    st.info(
-        f"Pit window: laps {low} to {high}. The window is the recommendation and lap "
-        f"{best_lap} is only its centre. Across those {high - low + 1} laps the "
-        f"predicted difference stays under half a second, which is finer than this "
-        f"model can resolve."
-    )
-    st.caption(
-        "Clean air only: no traffic, safety cars, or rival undercuts are modelled. "
-        "Moving the temperature re-solves the optimum, and which way it shifts "
-        "depends on which compound carries the larger fitted temperature term, so "
-        "there is no universal rule that a hotter track means stopping earlier."
-    )
+        left, right = st.columns(2)
+        left.metric("Best one-stop", f"{best_time:.1f} s", f"pit lap {best_lap}")
+        right.metric("Two-stop", f"{two_stop:.1f} s", f"{two_stop - best_time:+.1f} s")
+        st.info(
+            f"Pit window: laps {low} to {high}. The window is the recommendation and lap "
+            f"{best_lap} is only its centre. Across those {high - low + 1} laps the "
+            f"predicted difference stays under half a second, which is finer than this "
+            f"model can resolve."
+        )
+        st.caption(
+            "Clean air only: no traffic, safety cars, or rival undercuts are modelled. "
+            "Moving the temperature re-solves the optimum, and which way it shifts "
+            "depends on which compound carries the larger fitted temperature term, so "
+            "there is no universal rule that a hotter track means stopping earlier."
+        )
 
 with quali_tab:
     st.header("Predicted qualifying order")
@@ -333,71 +333,71 @@ with quali_tab:
             f"No {export.QUALI_OUT} yet. Build it with "
             f"`python -m f1_predict.export`."
         )
-        st.stop()
+    else:
 
-    # Scored with the same function that produced the verdict, so this
-    # headline cannot drift away from what the model actually did.
-    model_scores = quali.score(predicted_quali, predicted_quali["pred_position"])
-    base_scores = quali.score(predicted_quali, predicted_quali["baseline_position"])
+        # Scored with the same function that produced the verdict, so this
+        # headline cannot drift away from what the model actually did.
+        model_scores = quali.score(predicted_quali, predicted_quali["pred_position"])
+        base_scores = quali.score(predicted_quali, predicted_quali["baseline_position"])
 
-    a, b, c = st.columns(3)
-    a.metric(
-        "Model error",
-        f"{model_scores['position_mae']:.2f} places",
-        f"{model_scores['position_mae'] - base_scores['position_mae']:+.2f} vs baseline",
-        delta_color="inverse",
-    )
-    b.metric("Baseline: raw practice pace", f"{base_scores['position_mae']:.2f} places")
-    c.metric(
-        "Top-3 hit rate",
-        f"{model_scores['top3_hit']:.0%}",
-        f"baseline {base_scores['top3_hit']:.0%}",
-    )
-    st.warning(
-        f"**The model loses.** Ranking drivers by their raw fastest practice lap "
-        f"misses by {base_scores['position_mae']:.2f} places; the Ridge model built "
-        f"on top of that pace misses by {model_scores['position_mae']:.2f}. "
-        f"Everything below is shown so you can see where it goes wrong, not "
-        f"because it works."
-    )
-
-    quali_rounds = sorted(predicted_quali["round"].unique())
-    quali_event = st.selectbox(
-        "Race",
-        [EVENT_BY_ROUND.get(r, f"Round {r}") for r in quali_rounds],
-        key="quali_event",
-    )
-    one = predicted_quali[
-        predicted_quali["round"] == ROUND_BY_EVENT.get(quali_event, -1)
-    ].copy()
-    one["miss"] = one["pred_position"] - one["quali_position"]
-    table = one.sort_values("quali_position")[
-        ["driver", "quali_position", "pred_position", "baseline_position", "miss"]
-    ]
-    table.columns = ["Driver", "Actual", "Predicted", "Baseline", "Miss"]
-    st.dataframe(table.set_index("Driver"), width="stretch")
-
-    session_used = one["primary_session"].iloc[0] if len(one) else "?"
-    st.caption(
-        f"Pace for this weekend was read from {session_used}, chosen by "
-        f"`sessions.pick_primary`: sprint qualifying if the weekend has one, "
-        f"otherwise the latest dry practice session. Predictions are "
-        f"leave-one-race-out, so this weekend's own qualifying never reached "
-        f"the model that predicted it. `Miss` is places out, positive meaning "
-        f"the model expected the driver further back than they qualified."
-    )
-    if one["imputed"].sum():
-        st.info(
-            f"{int(one['imputed'].sum())} driver(s) set no usable lap in "
-            f"{session_used} and fell back to their FP1 gap, or to the field's "
-            f"worst gap if they set nothing at all."
+        a, b, c = st.columns(3)
+        a.metric(
+            "Model error",
+            f"{model_scores['position_mae']:.2f} places",
+            f"{model_scores['position_mae'] - base_scores['position_mae']:+.2f} vs baseline",
+            delta_color="inverse",
         )
-    st.caption(
-        f"{predicted_quali['round'].nunique()} of "
-        f"{laps['round'].nunique()} completed rounds appear here. A "
-        f"weekend whose practice ran wet has no dry pace comparable to a dry "
-        f"qualifying, and is skipped rather than guessed at."
-    )
+        b.metric("Baseline: raw practice pace", f"{base_scores['position_mae']:.2f} places")
+        c.metric(
+            "Top-3 hit rate",
+            f"{model_scores['top3_hit']:.0%}",
+            f"baseline {base_scores['top3_hit']:.0%}",
+        )
+        st.warning(
+            f"**The model loses.** Ranking drivers by their raw fastest practice lap "
+            f"misses by {base_scores['position_mae']:.2f} places; the Ridge model built "
+            f"on top of that pace misses by {model_scores['position_mae']:.2f}. "
+            f"Everything below is shown so you can see where it goes wrong, not "
+            f"because it works."
+        )
+
+        quali_rounds = sorted(predicted_quali["round"].unique())
+        quali_event = st.selectbox(
+            "Race",
+            [EVENT_BY_ROUND.get(r, f"Round {r}") for r in quali_rounds],
+            key="quali_event",
+        )
+        one = predicted_quali[
+            predicted_quali["round"] == ROUND_BY_EVENT.get(quali_event, -1)
+        ].copy()
+        one["miss"] = one["pred_position"] - one["quali_position"]
+        table = one.sort_values("quali_position")[
+            ["driver", "quali_position", "pred_position", "baseline_position", "miss"]
+        ]
+        table.columns = ["Driver", "Actual", "Predicted", "Baseline", "Miss"]
+        st.dataframe(table.set_index("Driver"), width="stretch")
+
+        session_used = one["primary_session"].iloc[0] if len(one) else "?"
+        st.caption(
+            f"Pace for this weekend was read from {session_used}, chosen by "
+            f"`sessions.pick_primary`: sprint qualifying if the weekend has one, "
+            f"otherwise the latest dry practice session. Predictions are "
+            f"leave-one-race-out, so this weekend's own qualifying never reached "
+            f"the model that predicted it. `Miss` is places out, positive meaning "
+            f"the model expected the driver further back than they qualified."
+        )
+        if one["imputed"].sum():
+            st.info(
+                f"{int(one['imputed'].sum())} driver(s) set no usable lap in "
+                f"{session_used} and fell back to their FP1 gap, or to the field's "
+                f"worst gap if they set nothing at all."
+            )
+        st.caption(
+            f"{predicted_quali['round'].nunique()} of "
+            f"{laps['round'].nunique()} completed rounds appear here. A "
+            f"weekend whose practice ran wet has no dry pace comparable to a dry "
+            f"qualifying, and is skipped rather than guessed at."
+        )
 
 with odds_tab:
     st.header("Race outcome probabilities")
@@ -407,78 +407,78 @@ with odds_tab:
             f"No {export.RACE_OUT} yet. Build it with "
             f"`python -m f1_predict.export` -- it takes several minutes."
         )
-        st.stop()
+    else:
 
-    model_brier = {o: race.brier(odds[o], odds[f"actual_{o}"]) for o in race.OUTCOMES}
-    base_brier = {
-        o: race.brier(odds[f"base_{o}"], odds[f"actual_{o}"]) for o in race.OUTCOMES
-    }
+        model_brier = {o: race.brier(odds[o], odds[f"actual_{o}"]) for o in race.OUTCOMES}
+        base_brier = {
+            o: race.brier(odds[f"base_{o}"], odds[f"actual_{o}"]) for o in race.OUTCOMES
+        }
 
-    labels = {"p_win": "Win", "p_podium": "Podium", "p_points": "Points"}
-    for column, outcome in zip(st.columns(3), race.OUTCOMES):
-        column.metric(
-            f"Brier: {labels[outcome]}",
-            f"{model_brier[outcome]:.4f}",
-            f"{model_brier[outcome] - base_brier[outcome]:+.4f} vs grid table",
-            delta_color="inverse",
+        labels = {"p_win": "Win", "p_podium": "Podium", "p_points": "Points"}
+        for column, outcome in zip(st.columns(3), race.OUTCOMES):
+            column.metric(
+                f"Brier: {labels[outcome]}",
+                f"{model_brier[outcome]:.4f}",
+                f"{model_brier[outcome] - base_brier[outcome]:+.4f} vs grid table",
+                delta_color="inverse",
+            )
+        st.warning(
+            "**The simulation loses on all three.** A one-column lookup table -- for "
+            "each grid slot, how often drivers starting there won, finished on the "
+            "podium and scored -- beats it every time. Brier is a squared error on "
+            "the stated probability: lower is better, and a confident wrong answer "
+            "is punished hardest."
         )
-    st.warning(
-        "**The simulation loses on all three.** A one-column lookup table -- for "
-        "each grid slot, how often drivers starting there won, finished on the "
-        "podium and scored -- beats it every time. Brier is a squared error on "
-        "the stated probability: lower is better, and a confident wrong answer "
-        "is punished hardest."
-    )
 
-    odds_event = st.selectbox(
-        "Race", sorted(odds["event_name"].unique()), key="odds_event"
-    )
-    one = odds[odds["event_name"] == odds_event].sort_values("grid")
+        odds_event = st.selectbox(
+            "Race", sorted(odds["event_name"].unique()), key="odds_event"
+        )
+        one = odds[odds["event_name"] == odds_event].sort_values("grid")
 
-    chart = one.set_index("driver")[["p_win", "base_p_win"]]
-    chart.columns = ["Simulation", "Grid table"]
-    st.bar_chart(chart)
-    st.caption("P(win) per driver, simulation against the grid-slot baseline.")
+        chart = one.set_index("driver")[["p_win", "base_p_win"]]
+        chart.columns = ["Simulation", "Grid table"]
+        st.bar_chart(chart)
+        st.caption("P(win) per driver, simulation against the grid-slot baseline.")
 
-    shown = one[
-        ["driver", "grid", "position", "p_win", "p_podium", "p_points",
-         "base_p_win", "base_p_podium", "base_p_points"]
-    ].copy()
-    shown.columns = [
-        "Driver", "Grid", "Finished", "P(win)", "P(podium)", "P(points)",
-        "Grid P(win)", "Grid P(podium)", "Grid P(points)",
-    ]
-    percent = [c for c in shown.columns if "P(" in c]
-    st.dataframe(
-        shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
-        width="stretch",
-    )
+        shown = one[
+            ["driver", "grid", "position", "p_win", "p_podium", "p_points",
+             "base_p_win", "base_p_podium", "base_p_points"]
+        ].copy()
+        shown.columns = [
+            "Driver", "Grid", "Finished", "P(win)", "P(podium)", "P(points)",
+            "Grid P(win)", "Grid P(podium)", "Grid P(points)",
+        ]
+        percent = [c for c in shown.columns if "P(" in c]
+        st.dataframe(
+            shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
+            width="stretch",
+        )
 
-    winner = one.loc[one["position"] == 1.0, "driver"]
-    if len(winner):
-        given = float(one.loc[one["driver"] == winner.iloc[0], "p_win"].iloc[0])
-        st.info(f"{winner.iloc[0]} won this race. The simulation gave them {given:.1%}.")
+        winner = one.loc[one["position"] == 1.0, "driver"]
+        if len(winner):
+            given = float(one.loc[one["driver"] == winner.iloc[0], "p_win"].iloc[0])
+            st.info(f"{winner.iloc[0]} won this race. The simulation gave them {given:.1%}.")
 
-    st.caption(
-        f"Leave-one-race-out: this race's own laps, passing record and "
-        f"reliability never reached the simulation that predicted it. Pace comes "
-        f"from the weekend's practice, the tyre model is refitted without this "
-        f"round, and the race runs its originally scheduled distance so a red "
-        f"flag cannot leak backwards. "
-        f"{int(one['n_excluded_total'].iloc[0])} of "
-        f"{int(one['n_rows_total'].iloc[0])} season entries are excluded: drivers "
-        f"with no grid slot or no practice pace, plus every entry from a skipped "
-        f"round."
-    )
-    if str(one["skipped_rounds"].iloc[0]).strip():
-        st.caption(f"Skipped rounds -- {one['skipped_rounds'].iloc[0]}")
-    st.caption(
-        "Safety cars are not modelled at all, and they are the single largest "
-        "source of race randomness. The simulation is therefore overconfident by "
-        "construction: its probabilities sit closer to 0 and 1 than reality "
-        "warrants. Eleven races contain eleven wins, so P(win) is the headline "
-        "number with the least evidence behind it."
-    )
+        st.caption(
+            f"Leave-one-race-out: this race's own laps, passing record and "
+            f"reliability never reached the simulation that predicted it. Pace comes "
+            f"from the weekend's practice, the tyre model is refitted without this "
+            f"round, and the race runs its originally scheduled distance so a red "
+            f"flag cannot leak backwards. "
+            f"{int(one['n_excluded_total'].iloc[0])} of "
+            f"{int(one['n_rows_total'].iloc[0])} season entries are excluded: drivers "
+            f"with no grid slot or no practice pace, plus every entry from a skipped "
+            f"round."
+        )
+        if str(one["skipped_rounds"].iloc[0]).strip():
+            st.caption(f"Skipped rounds -- {one['skipped_rounds'].iloc[0]}")
+        st.caption(
+            "Safety cars are not modelled at all, and they are the single largest "
+            "source of race randomness. The simulation is therefore overconfident by "
+            "construction: its probabilities sit closer to 0 and 1 than reality "
+            "warrants. Eleven races contain eleven wins, so P(win) is the headline "
+            "number with the least evidence behind it."
+        )
 
 with midrace_tab:
     st.header("Prediction from part-way through the race")
@@ -488,130 +488,130 @@ with midrace_tab:
             f"No {export.MIDRACE_OUT} yet. Build it with "
             f"`python -m f1_predict.export` -- it takes several minutes."
         )
-        st.stop()
-
-    rows = []
-    for fraction in sorted(mid["fraction"].unique()):
-        at = mid[mid["fraction"] == fraction]
-        entry = {"Race distance": f"{fraction:.0%}"}
-        for outcome in race.OUTCOMES:
-            entry[f"Model {outcome}"] = race.brier(
-                at[outcome], at[f"actual_{outcome}"]
-            )
-            entry[f"Baseline {outcome}"] = race.brier(
-                at[f"base_{outcome}"], at[f"actual_{outcome}"]
-            )
-        rows.append(entry)
-    curve = pd.DataFrame(rows).set_index("Race distance")
-
-    # The verdict is generated from the curve, never restated from a report.
-    # It was written out by hand once and went stale the first time a new
-    # race entered the season: the Dutch Grand Prix flipped P(points) at 90%
-    # from the model to the baseline while the sentence still claimed the
-    # model won it.
-    LABEL = {"p_win": "P(win)", "p_podium": "P(podium)", "p_points": "P(points)"}
-    won, lost = [], []
-    for fraction in sorted(mid["fraction"].unique()):
-        at = mid[mid["fraction"] == fraction]
-        beats = [
-            LABEL[o]
-            for o in race.OUTCOMES
-            if race.brier(at[o], at[f"actual_{o}"])
-            < race.brier(at[f"base_{o}"], at[f"actual_{o}"])
-        ]
-        (won if beats else lost).append((f"{fraction:.0%}", beats))
-
-    def _phrase(fraction, beats):
-        if len(beats) == len(race.OUTCOMES):
-            return f"all three at {fraction}"
-        return f"{' and '.join(beats)} at {fraction}"
-
-    if won:
-        verdict = (
-            "**The model beats the baseline on "
-            + "; ".join(_phrase(f, b) for f, b in won)
-            + ".**"
-        )
-        if lost:
-            verdict += (
-                " The baseline takes every outcome at "
-                + ", ".join(f for f, _ in lost)
-                + "."
-            )
     else:
-        verdict = (
-            "**The baseline beats the model at every point of the race.** "
-            "That is the finding, reported rather than tuned away."
+
+        rows = []
+        for fraction in sorted(mid["fraction"].unique()):
+            at = mid[mid["fraction"] == fraction]
+            entry = {"Race distance": f"{fraction:.0%}"}
+            for outcome in race.OUTCOMES:
+                entry[f"Model {outcome}"] = race.brier(
+                    at[outcome], at[f"actual_{outcome}"]
+                )
+                entry[f"Baseline {outcome}"] = race.brier(
+                    at[f"base_{outcome}"], at[f"actual_{outcome}"]
+                )
+            rows.append(entry)
+        curve = pd.DataFrame(rows).set_index("Race distance")
+
+        # The verdict is generated from the curve, never restated from a report.
+        # It was written out by hand once and went stale the first time a new
+        # race entered the season: the Dutch Grand Prix flipped P(points) at 90%
+        # from the model to the baseline while the sentence still claimed the
+        # model won it.
+        LABEL = {"p_win": "P(win)", "p_podium": "P(podium)", "p_points": "P(points)"}
+        won, lost = [], []
+        for fraction in sorted(mid["fraction"].unique()):
+            at = mid[mid["fraction"] == fraction]
+            beats = [
+                LABEL[o]
+                for o in race.OUTCOMES
+                if race.brier(at[o], at[f"actual_{o}"])
+                < race.brier(at[f"base_{o}"], at[f"actual_{o}"])
+            ]
+            (won if beats else lost).append((f"{fraction:.0%}", beats))
+
+        def _phrase(fraction, beats):
+            if len(beats) == len(race.OUTCOMES):
+                return f"all three at {fraction}"
+            return f"{' and '.join(beats)} at {fraction}"
+
+        if won:
+            verdict = (
+                "**The model beats the baseline on "
+                + "; ".join(_phrase(f, b) for f, b in won)
+                + ".**"
+            )
+            if lost:
+                verdict += (
+                    " The baseline takes every outcome at "
+                    + ", ".join(f for f, _ in lost)
+                    + "."
+                )
+        else:
+            verdict = (
+                "**The baseline beats the model at every point of the race.** "
+                "That is the finding, reported rather than tuned away."
+            )
+
+        n_races = int(mid["round"].nunique())
+        st.line_chart(curve[["Model p_win", "Baseline p_win"]])
+        st.info(
+            f"{verdict} Early in a race, track position is a weak signal, "
+            f"because most of the race and every pit stop is still ahead, so a "
+            f"simulation that knows pace and tyre state adds real information. "
+            f"Late in a race, position becomes strongly informative about who "
+            f"is about to win or reach the podium, and the simulation has less "
+            f"left to add on top of it."
+        )
+        st.dataframe(curve.style.format("{:.4f}"), width="stretch")
+
+        latest = curve.index[-1]
+        perfect = curve.loc[latest, "Baseline p_win"] == 0.0
+        st.caption(
+            f"Brier for each outcome against how far into the race the "
+            f"prediction was made. Lower is better."
+            + (
+                f" At {latest} distance the baseline's P(win) Brier is exactly "
+                f"0.0000: the leader at that point went on to win all "
+                f"{n_races} races, a baseline nothing can beat."
+                if perfect
+                else ""
+            )
+        )
+        st.warning(
+            f"No significance test was run. Over {n_races} races, all of these "
+            f"margins are suggestive, not proven: treat this as a measured "
+            f"result on a small sample, not a settled conclusion. Adding the "
+            f"Dutch Grand Prix narrowed the model's lead at 25% and 50% rather "
+            f"than widening it, which is what a margin this size can do."
         )
 
-    n_races = int(mid["round"].nunique())
-    st.line_chart(curve[["Model p_win", "Baseline p_win"]])
-    st.info(
-        f"{verdict} Early in a race, track position is a weak signal, "
-        f"because most of the race and every pit stop is still ahead, so a "
-        f"simulation that knows pace and tyre state adds real information. "
-        f"Late in a race, position becomes strongly informative about who "
-        f"is about to win or reach the podium, and the simulation has less "
-        f"left to add on top of it."
-    )
-    st.dataframe(curve.style.format("{:.4f}"), width="stretch")
-
-    latest = curve.index[-1]
-    perfect = curve.loc[latest, "Baseline p_win"] == 0.0
-    st.caption(
-        f"Brier for each outcome against how far into the race the "
-        f"prediction was made. Lower is better."
-        + (
-            f" At {latest} distance the baseline's P(win) Brier is exactly "
-            f"0.0000: the leader at that point went on to win all "
-            f"{n_races} races, a baseline nothing can beat."
-            if perfect
-            else ""
+        mid_event = st.selectbox(
+            "Race", sorted(mid["event_name"].unique()), key="mid_event"
         )
-    )
-    st.warning(
-        f"No significance test was run. Over {n_races} races, all of these "
-        f"margins are suggestive, not proven: treat this as a measured "
-        f"result on a small sample, not a settled conclusion. Adding the "
-        f"Dutch Grand Prix narrowed the model's lead at 25% and 50% rather "
-        f"than widening it, which is what a margin this size can do."
-    )
-
-    mid_event = st.selectbox(
-        "Race", sorted(mid["event_name"].unique()), key="mid_event"
-    )
-    mid_fraction = st.select_slider(
-        "Predict from",
-        options=sorted(mid["fraction"].unique()),
-        format_func=lambda f: f"{f:.0%} distance",
-    )
-    one = mid[
-        (mid["event_name"] == mid_event) & (mid["fraction"] == mid_fraction)
-    ].sort_values("position_at_n")
-    if one.empty:
-        st.info("This race was not scored at that point.")
-    else:
-        shown = one[
-            ["driver", "position_at_n", "position", "p_win", "p_podium",
-             "p_points", "base_p_win"]
-        ].copy()
-        shown.columns = [
-            "Driver", f"Position at lap {int(one['lap'].iloc[0])}", "Finished",
-            "P(win)", "P(podium)", "P(points)", "Baseline P(win)",
-        ]
-        percent = [c for c in shown.columns if c.startswith(("P(", "Baseline"))]
-        st.dataframe(
-            shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
-            width="stretch",
+        mid_fraction = st.select_slider(
+            "Predict from",
+            options=sorted(mid["fraction"].unique()),
+            format_func=lambda f: f"{f:.0%} distance",
         )
-    st.caption(
-        "Safety cars are still not modelled, and they matter more mid-race "
-        "than before the start: a caution can hand a stopped driver the "
-        "whole field's track position back in a single lap. That is "
-        f"subsystem C2. The {len(curve)} points on this curve come from "
-        f"the same {n_races} races, so it is a trend, not "
-        f"{len(curve)} independent measurements."
-    )
+        one = mid[
+            (mid["event_name"] == mid_event) & (mid["fraction"] == mid_fraction)
+        ].sort_values("position_at_n")
+        if one.empty:
+            st.info("This race was not scored at that point.")
+        else:
+            shown = one[
+                ["driver", "position_at_n", "position", "p_win", "p_podium",
+                 "p_points", "base_p_win"]
+            ].copy()
+            shown.columns = [
+                "Driver", f"Position at lap {int(one['lap'].iloc[0])}", "Finished",
+                "P(win)", "P(podium)", "P(points)", "Baseline P(win)",
+            ]
+            percent = [c for c in shown.columns if c.startswith(("P(", "Baseline"))]
+            st.dataframe(
+                shown.set_index("Driver").style.format({c: "{:.1%}" for c in percent}),
+                width="stretch",
+            )
+        st.caption(
+            "Safety cars are still not modelled, and they matter more mid-race "
+            "than before the start: a caution can hand a stopped driver the "
+            "whole field's track position back in a single lap. That is "
+            f"subsystem C2. The {len(curve)} points on this curve come from "
+            f"the same {n_races} races, so it is a trend, not "
+            f"{len(curve)} independent measurements."
+        )
 
 with replay_tab:
     st.header("Lap-by-lap replay")

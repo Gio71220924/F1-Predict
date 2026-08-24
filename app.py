@@ -40,6 +40,32 @@ def load_model():
     return model.load()
 
 
+@st.cache_data(show_spinner=False)
+def outcome_intervals(path, fraction=None):
+    """Per outcome: the Brier gap and its 95% interval, or None if no table.
+
+    Resampled over races by race.bootstrap_gap. Cached because the answer
+    cannot change until the saved table does, and resampling on every rerun
+    would cost seconds for nothing.
+    """
+    frame = load_predictions(path)
+    if frame is None:
+        return None
+    if fraction is not None:
+        frame = frame[frame["fraction"] == fraction]
+    out = {}
+    for outcome in race.OUTCOMES:
+        gap = race.brier(
+            frame[f"base_{outcome}"], frame[f"actual_{outcome}"]
+        ) - race.brier(frame[outcome], frame[f"actual_{outcome}"])
+        low, high, share = race.bootstrap_gap(
+            frame, outcome, f"base_{outcome}", f"actual_{outcome}",
+            n_boot=1000, seed=1,
+        )
+        out[outcome] = (gap, low, high, share)
+    return out
+
+
 @st.cache_data
 def load_predictions(path):
     """A prediction table written by `f1_predict.export`, or None.
@@ -510,38 +536,44 @@ with midrace_tab:
         # from the model to the baseline while the sentence still claimed the
         # model won it.
         LABEL = {"p_win": "P(win)", "p_podium": "P(podium)", "p_points": "P(points)"}
-        won, lost = [], []
+        # An advantage is claimed only where the 95% interval excludes zero. On
+        # point estimate alone the model led all three outcomes at 25% and 50%,
+        # but four of those six gaps sit inside the interval. Calling those wins
+        # would be a false signal, which is the one thing this project cannot
+        # afford to publish.
+        proven, leaning, against = [], [], []
         for fraction in sorted(mid["fraction"].unique()):
-            at = mid[mid["fraction"] == fraction]
-            beats = [
-                LABEL[o]
-                for o in race.OUTCOMES
-                if race.brier(at[o], at[f"actual_{o}"])
-                < race.brier(at[f"base_{o}"], at[f"actual_{o}"])
-            ]
-            (won if beats else lost).append((f"{fraction:.0%}", beats))
+            stats = outcome_intervals(export.MIDRACE_OUT, fraction)
+            label = f"{fraction:.0%}"
+            for outcome in race.OUTCOMES:
+                gap, low, high, _share = stats[outcome]
+                if low > 0:
+                    proven.append(f"{LABEL[outcome]} at {label}")
+                elif high < 0:
+                    against.append(f"{LABEL[outcome]} at {label}")
+                elif gap > 0:
+                    leaning.append(f"{LABEL[outcome]} at {label}")
 
-        def _phrase(fraction, beats):
-            if len(beats) == len(race.OUTCOMES):
-                return f"all three at {fraction}"
-            return f"{' and '.join(beats)} at {fraction}"
-
-        if won:
+        if proven:
             verdict = (
-                "**The model beats the baseline on "
-                + "; ".join(_phrase(f, b) for f, b in won)
+                "**The model beats the baseline, with the interval to back it, on "
+                + " and ".join(proven)
                 + ".**"
             )
-            if lost:
-                verdict += (
-                    " The baseline takes every outcome at "
-                    + ", ".join(f for f, _ in lost)
-                    + "."
-                )
         else:
             verdict = (
-                "**The baseline beats the model at every point of the race.** "
-                "That is the finding, reported rather than tuned away."
+                "**No advantage in either direction survives its confidence "
+                "interval.** Every gap sits inside the noise."
+            )
+        if leaning:
+            verdict += (
+                " It leads on point estimate but sits inside the interval on "
+                + ", ".join(leaning)
+                + " -- suggestive, and not a result."
+            )
+        if against:
+            verdict += (
+                " The baseline is significantly better on " + ", ".join(against) + "."
             )
 
         n_races = int(mid["round"].nunique())
@@ -570,11 +602,13 @@ with midrace_tab:
             )
         )
         st.warning(
-            f"No significance test was run. Over {n_races} races, all of these "
-            f"margins are suggestive, not proven: treat this as a measured "
-            f"result on a small sample, not a settled conclusion. Adding the "
-            f"Dutch Grand Prix narrowed the model's lead at 25% and 50% rather "
-            f"than widening it, which is what a margin this size can do."
+            f"Intervals are 95%, bootstrapped over {n_races} races rather "
+            f"than over rows: drivers in one race share its conditions and "
+            f"are not independent observations, so resampling rows would "
+            f"report a confidence the data does not support. {n_races} races "
+            f"is still a small sample -- adding the Dutch Grand Prix narrowed "
+            f"the model's lead at 25% and 50% rather than widening it, which "
+            f"is what a margin this size can do."
         )
 
         mid_event = st.selectbox(

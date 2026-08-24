@@ -39,22 +39,6 @@ def test_pick_primary_falls_through_a_wet_sprint_qualifying():
     assert sessions.pick_primary(["FP1", "SQ"], wet={"SQ"}) == "FP1"
 
 
-def test_is_wet_reads_the_rainfall_flag():
-    dry = pd.DataFrame({"Rainfall": [False, False, False]})
-    damp = pd.DataFrame({"Rainfall": [False, True, False]})
-
-    assert sessions.is_wet(dry) is False
-    # Any rainfall at all disqualifies the session: a dry qualifying cannot
-    # be predicted from pace set on a track that was wet part of the time.
-    assert sessions.is_wet(damp) is True
-
-
-def test_is_wet_handles_a_missing_rainfall_column():
-    # Some sessions come back without weather at all. Absence of evidence
-    # is not evidence of rain -- treat it as dry and let the caller decide.
-    assert sessions.is_wet(pd.DataFrame({"AirTemp": [20.0]})) is False
-
-
 def _session_frame(rows):
     """Minimal clean-lap frame from (driver, stint, lap_seconds) tuples."""
     return pd.DataFrame(
@@ -265,3 +249,38 @@ def test_an_unpublished_session_is_reported_rather_than_returned_empty():
 
     populated = pd.DataFrame({"Abbreviation": ["AAA"], "Position": [1.0]})
     assert sessions.require_published(populated, 2026, 11, "race") is populated
+
+
+def test_a_session_is_wet_when_wet_tyres_were_fitted():
+    """Rainfall on a sensor is not the same thing as a wet session.
+
+    The rule used to be "any rainfall sample makes the session wet", and it
+    misclassified real weekends. All three Monaco practice sessions ran from
+    start to finish on slicks and were called wet on 3, 7 and 1 rainfall
+    samples, so Monaco was dropped from qualifying and race-outcome scoring
+    entirely. The Dutch Grand Prix's sprint qualifying went the same way on
+    3 of 62 samples.
+
+    Wet tyres on the car are the fact that matters: they are fitted only
+    when the track is actually wet, and their presence or absence is what
+    decides whether these lap times can be compared with a dry qualifying.
+    """
+    dry = pd.DataFrame({"Compound": ["SOFT", "MEDIUM", "HARD", None]})
+    assert sessions.ran_wet(dry) is False
+
+    damp = pd.DataFrame({"Compound": ["SOFT", "MEDIUM", "INTERMEDIATE"]})
+    assert sessions.ran_wet(damp) is True
+
+    soaked = pd.DataFrame({"Compound": ["WET", "WET", "INTERMEDIATE"]})
+    assert sessions.ran_wet(soaked) is True
+
+
+def test_a_session_with_no_compound_data_is_not_assumed_wet():
+    """Absence of evidence is not evidence of rain.
+
+    A session that recorded no compound at all tells us nothing about the
+    track. Calling it wet would silently drop it from every model, which is
+    the failure this change exists to correct.
+    """
+    assert sessions.ran_wet(pd.DataFrame({"Compound": []})) is False
+    assert sessions.ran_wet(pd.DataFrame()) is False

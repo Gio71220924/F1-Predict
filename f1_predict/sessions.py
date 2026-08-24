@@ -51,17 +51,33 @@ def pick_primary(available: list[str], wet: set[str]) -> str:
     )
 
 
-def is_wet(weather: pd.DataFrame) -> bool:
-    """True if any rain fell during the session.
+WET_COMPOUNDS = {"INTERMEDIATE", "WET"}
 
-    Deliberately strict: a session that was wet for part of its length
-    still has a track evolving in a way that makes its lap times
-    incomparable to a dry qualifying. A session with no weather data at
-    all counts as dry -- absence of evidence is not evidence of rain.
+
+def ran_wet(laps: pd.DataFrame) -> bool:
+    """True if anyone fitted a wet-weather tyre during the session.
+
+    Rainfall on a trackside sensor is not the same thing as a wet session,
+    and using it as the test misclassified real weekends. All three Monaco
+    practice sessions of 2026 ran start to finish on slicks and were called
+    wet on 3, 7 and 1 rainfall samples out of about eighty, which dropped
+    Monaco out of qualifying and race-outcome scoring altogether. The Dutch
+    Grand Prix's sprint qualifying went the same way on 3 samples of 62.
+
+    Wet tyres are the fact that matters. Teams fit them only when the track
+    is genuinely wet, and whether they were fitted is exactly what decides
+    if these lap times can be compared with a dry qualifying. A session with
+    no compound data at all is treated as dry: absence of evidence is not
+    evidence of rain, and calling it wet would silently drop it from every
+    model, which is the failure this rule exists to correct.
+
+    Read the RAW session laps, not a filtered frame -- data.filter_laps
+    keeps only dry compounds, so wet running is exactly what it removes.
     """
-    if "Rainfall" not in weather.columns:
+    if "Compound" not in laps.columns or laps.empty:
         return False
-    return bool(weather["Rainfall"].any())
+    return bool(set(laps["Compound"].dropna().unique()) & WET_COMPOUNDS)
+
 
 
 QUALI_SEGMENTS = ["Q1", "Q2", "Q3"]
@@ -147,7 +163,9 @@ def load_session(year: int, round_no: int, name: str) -> tuple[pd.DataFrame, boo
         event_name=session.event["EventName"],
     )
     clean, _ = data.filter_laps(prepared, min_stint_laps=1)
-    return clean, is_wet(session.weather_data)
+    # Judged from the tyres actually fitted, not the rainfall sensor. See
+    # ran_wet: the sensor called three slick Monaco sessions wet.
+    return clean, ran_wet(session.laps)
 
 
 FINISHED_STATUSES = ("Finished", "Lapped")

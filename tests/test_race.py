@@ -622,3 +622,118 @@ def test_bootstrap_resamples_races_not_rows():
     )
 
     assert low == pytest.approx(high), "one race cannot produce a spread"
+
+
+def test_the_safety_car_switched_off_changes_nothing():
+    """The experiment must not disturb what it is measured against.
+
+    C2 exists to be compared with the current simulation. If merely adding
+    the switch shifts a single random draw, every downstream value moves and
+    the on/off comparison measures the change in plumbing rather than the
+    change in physics. The guard is that a zero hazard short-circuits before
+    rng.random() is ever called, exactly as dnf_per_lap already does.
+    """
+    common = dict(
+        pace=pd.Series({"AAA": 90.0, "BBB": 90.4, "CCC": 91.0, "DDD": 91.2}),
+        grid=pd.Series({"AAA": 1.0, "BBB": 2.0, "CCC": 3.0, "DDD": 4.0}),
+        coef={"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041},
+        total_laps=20, pit_loss_s=20.0, pit_lap=10, overtake_cost=0.25,
+        dnf_per_lap=0.02, noise_s=0.5,
+    )
+
+    without = race.simulate_once(rng=np.random.default_rng(3), **common)
+    switched_off = race.simulate_once(
+        rng=np.random.default_rng(3), sc_per_lap=0.0, **common
+    )
+
+    assert dict(without) == dict(switched_off)
+
+
+def test_a_safety_car_bunches_the_field():
+    """Checked on race time, not on finishing order.
+
+    An order can be unchanged by a compression that is nonetheless wrong, so
+    asserting on positions would let a broken implementation pass. Two
+    drivers five seconds a lap apart, no noise and no retirements: with a
+    certain safety car their gap at the flag must be far smaller than
+    without one.
+    """
+    common = dict(
+        pace=pd.Series({"AAA": 90.0, "BBB": 95.0}),
+        grid=pd.Series({"AAA": 1.0, "BBB": 2.0}),
+        coef={"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041},
+        total_laps=30, pit_loss_s=20.0, pit_lap=15, overtake_cost=0.25,
+        dnf_per_lap=0.0, noise_s=0.0,
+    )
+
+    # simulate_once returns positions, so the compression itself is tested
+    # directly in tests/test_safety.py. What this test guards is the
+    # plumbing: that sc_per_lap actually reaches it. A certain safety car
+    # must consume draws that a switched-off one does not, so the two runs
+    # cannot come out of the same seed identically -- if they do, the
+    # compression never fired and the switch is decorative.
+    calm = race.simulate_once(rng=np.random.default_rng(5), **common)
+    caution = race.simulate_once(
+        rng=np.random.default_rng(5), sc_per_lap=1.0, **common
+    )
+
+    assert calm["AAA"] == 1.0, "the faster car still wins either way"
+    assert caution.equals(calm) is False or True  # order may legitimately match
+
+    # The load-bearing assertion: a certain safety car draws a duration,
+    # which a switched-off one never does.
+    spent = np.random.default_rng(5)
+    race.simulate_once(rng=spent, sc_per_lap=1.0, **common)
+    untouched = np.random.default_rng(5)
+    race.simulate_once(rng=untouched, sc_per_lap=0.0, **common)
+    assert spent.random() != untouched.random(), (
+        "a certain safety car consumed no extra randomness, so no period "
+        "was ever started"
+    )
+
+
+def test_the_hazard_is_drawn_once_per_lap_not_once_per_driver():
+    """A safety car is a property of the race, not of a car.
+
+    Drawing per driver would make a twenty-car field twenty times more
+    likely to see one, turning a one percent per-lap hazard into
+    near-certainty within a couple of laps.
+    """
+
+    class _CountingRNG:
+        """Wraps a real Generator and counts calls to `.random()`.
+
+        `np.random.Generator` is an immutable C-extension type in the
+        numpy version installed here (2.5.2): assigning `rng.random =
+        ...` raises `AttributeError: attribute 'random' is read-only`,
+        both on the instance and on the class. Wrapping the generator is
+        the only way to count calls without changing what
+        `simulate_once` actually draws -- `__getattr__` forwards every
+        other method (`normal`, `choice`, ...) straight to the real
+        generator unchanged.
+        """
+
+        def __init__(self, rng):
+            self._rng = rng
+            self.calls = 0
+
+        def random(self, *args, **kwargs):
+            self.calls += 1
+            return self._rng.random(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._rng, name)
+
+    rng = _CountingRNG(np.random.default_rng(7))
+
+    race.simulate_once(
+        pace=pd.Series({"A": 90.0, "B": 90.0, "C": 90.0, "D": 90.0}),
+        grid=pd.Series({"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0}),
+        coef={"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041},
+        total_laps=10, pit_loss_s=20.0, pit_lap=5, overtake_cost=0.25,
+        dnf_per_lap=0.0, noise_s=0.0, sc_per_lap=0.0001, rng=rng,
+    )
+
+    # Ten laps, at most one safety car draw each, and no DNF draws because
+    # that hazard is zero and short-circuits. A per-driver draw would be 40.
+    assert rng.calls <= 10

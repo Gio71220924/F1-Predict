@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from f1_predict import strategy
+from f1_predict import safety, strategy
 
 
 def dnf_hazard(finished: pd.Series, total_laps: int) -> float:
@@ -101,6 +101,7 @@ def simulate_once(
     rng: np.random.Generator | None = None,
     state: pd.DataFrame | None = None,
     start_lap: int = 0,
+    sc_per_lap: float = 0.0,
 ) -> pd.Series:
     """Run one race and return each driver's finishing position.
 
@@ -108,6 +109,15 @@ def simulate_once(
     car only takes a position when its cumulative-time advantage exceeds
     `overtake_cost`, which is what stops the simulation walking fast cars
     to the front as though passing were free.
+
+    The safety car is off by default (`sc_per_lap=0.0`). This whole
+    subsystem is an experiment whose result is decided by comparing a run
+    with it on against the same run with it off, so the off state must be
+    bit-identical to what this function did before the safety car existed.
+    A zero hazard short-circuits before `rng.random()` is ever called --
+    the same guard `dnf_per_lap` already uses -- so switching it off draws
+    no random number and leaves every downstream random value where it
+    was.
 
     Retirements are classified behind every finisher, latest retirement
     first -- a driver who lasted 50 laps places ahead of one who lasted 5,
@@ -168,8 +178,15 @@ def simulate_once(
             for d in order
         }
     retired: list[tuple[int, str]] = []
+    sc_laps_left = 0
 
     for lap in range(start_lap + 1, total_laps + 1):
+        # One draw per lap, not per driver: a safety car belongs to the race.
+        # The zero check short-circuits so an off switch draws nothing and
+        # leaves every downstream random value where it was.
+        if sc_laps_left == 0 and sc_per_lap > 0.0 and rng.random() < sc_per_lap:
+            sc_laps_left = safety.draw_duration(rng)
+
         for driver in list(order):
             if dnf_per_lap > 0.0 and rng.random() < dnf_per_lap:
                 order.remove(driver)
@@ -192,6 +209,14 @@ def simulate_once(
                 compound[driver] = "HARD"
                 tyre_age[driver] = 0
             cumulative[driver] += seconds
+
+        if sc_laps_left > 0:
+            sc_laps_left -= 1
+            if sc_laps_left == 0:
+                # Applied once, at the end of the period. The 0.25 figure
+                # compares spread before a period with spread after it, so
+                # applying it every lap would collapse the field to a point.
+                safety.compress(cumulative, order)
 
         # A pass needs more than overtake_cost of cumulative advantage.
         # One adjacent sweep per lap: a car cannot gain two places in a

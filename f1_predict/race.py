@@ -498,9 +498,7 @@ def predictions(year: int = 2026, n_runs: int = 2000) -> tuple[pd.DataFrame, dic
         train_laps = all_laps[all_laps["round"] != round_no]
         fold_fit = model.fit(train_laps, with_temp=True)
         coef = fold_fit["coef"]
-        x, y = model.design_matrix(train_laps, with_temp=True)
-        residuals = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
-        noise_s = float(residuals.std())
+        noise_s = model.residual_sigma(train_laps, coef, with_temp=True)
 
         simulated = probabilities(
             n_runs=n_runs, seed=int(round_no),

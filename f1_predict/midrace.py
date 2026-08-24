@@ -307,9 +307,7 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
         train_laps = all_laps[all_laps["round"] != round_no]
         fold = model.fit(train_laps, with_temp=True)
         coef = fold["coef"]
-        x, y = model.design_matrix(train_laps, with_temp=True)
-        residuals = y - x.to_numpy() @ np.array([coef[c] for c in x.columns])
-        noise_s = float(residuals.std())
+        noise_s = model.residual_sigma(train_laps, coef, with_temp=True)
 
         overtake_cost = float(
             np.median([c for r, c in own_cost.items() if r != round_no])

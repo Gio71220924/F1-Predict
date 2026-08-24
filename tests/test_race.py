@@ -632,21 +632,43 @@ def test_the_safety_car_switched_off_changes_nothing():
     the on/off comparison measures the change in plumbing rather than the
     change in physics. The guard is that a zero hazard short-circuits before
     rng.random() is ever called, exactly as dnf_per_lap already does.
+
+    A version of this test that compares an explicit sc_per_lap=0.0 against
+    the parameter omitted (which defaults to the same 0.0) cannot catch the
+    short-circuit being deleted: both calls pass the identical value 0.0, so
+    both would take whatever the mutated code does identically, and the
+    comparison would still pass. This checks generator STATE instead.
+    dnf_per_lap and noise_s are both zero here too, so with the safety car
+    switch off, the only way anything could draw from `rng` at all is a
+    left-in sc check -- meaning a generator that ran the whole race must
+    yield the same NEXT value as a twin, identically-seeded generator that
+    was never touched, exactly as if `sc_per_lap` did not exist yet. A
+    nonzero hazard must break that equality, or this test could not tell
+    the two cases apart.
     """
     common = dict(
         pace=pd.Series({"AAA": 90.0, "BBB": 90.4, "CCC": 91.0, "DDD": 91.2}),
         grid=pd.Series({"AAA": 1.0, "BBB": 2.0, "CCC": 3.0, "DDD": 4.0}),
         coef={"age_MEDIUM": 0.04, "age_HARD": 0.045, "fuel": 0.041},
         total_laps=20, pit_loss_s=20.0, pit_lap=10, overtake_cost=0.25,
-        dnf_per_lap=0.02, noise_s=0.5,
+        dnf_per_lap=0.0, noise_s=0.0,
     )
+    untouched_next_draw = np.random.default_rng(3).random()
 
-    without = race.simulate_once(rng=np.random.default_rng(3), **common)
-    switched_off = race.simulate_once(
-        rng=np.random.default_rng(3), sc_per_lap=0.0, **common
-    )
+    explicit_off_rng = np.random.default_rng(3)
+    race.simulate_once(rng=explicit_off_rng, sc_per_lap=0.0, **common)
+    assert explicit_off_rng.random() == untouched_next_draw
 
-    assert dict(without) == dict(switched_off)
+    omitted_rng = np.random.default_rng(3)
+    race.simulate_once(rng=omitted_rng, **common)
+    assert omitted_rng.random() == untouched_next_draw
+
+    # A certain safety car must draw at least once, moving the generator
+    # off the untouched value -- proving the equality above is not simply
+    # always true regardless of what simulate_once does with `rng`.
+    nonzero_rng = np.random.default_rng(3)
+    race.simulate_once(rng=nonzero_rng, sc_per_lap=1.0, **common)
+    assert nonzero_rng.random() != untouched_next_draw
 
 
 def test_a_safety_car_bunches_the_field():

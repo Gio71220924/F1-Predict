@@ -6,6 +6,41 @@ measured, against 11,321 laps behind the tyre model and 903 scored rows
 behind the mid-race predictor. Everything here is sized to that evidence: a
 rate, a draw from the observed lengths, and one constant. Anything more
 would be inventing precision.
+
+The prediction that this experiment would fail was written into the design
+document before a line of this module's code existed, so a negative result
+could not be explained away afterwards.
+
+MEASURED RESULT (2026-08-24): safety-car-on against safety-car-off, 903
+mid-race prediction rows each side, n_runs=500 per run, bootstrapped over
+races at 95%. Gap is off minus on, so positive would mean the safety car
+helped.
+
+    fraction  outcome    gap        95% interval             verdict
+    25%       p_win      -0.00039   [-0.00225, +0.00161]     inside
+    25%       p_podium   +0.00102   [-0.00088, +0.00318]     inside
+    25%       p_points   -0.00232   [-0.00457, -0.00008]     HURTS
+    50%       p_win      -0.00024   [-0.00272, +0.00227]     inside
+    50%       p_podium   -0.00045   [-0.00270, +0.00199]     inside
+    50%       p_points   -0.00170   [-0.00387, +0.00026]     inside
+    75%       p_win      -0.00025   [-0.00120, +0.00061]     inside
+    75%       p_podium   +0.00021   [-0.00117, +0.00192]     inside
+    75%       p_points   +0.00011   [-0.00147, +0.00178]     inside
+    90%       p_win      +0.00005   [-0.00005, +0.00018]     inside
+    90%       p_podium   -0.00005   [-0.00076, +0.00050]     inside
+    90%       p_points   +0.00052   [-0.00030, +0.00150]     inside
+
+HELPS 0 of 12, HURTS 1, inside 11. The HURTS cell clears zero by 0.00008,
+against a Monte Carlo standard error on the gap of roughly 0.00112 --
+fourteen times the margin -- because n_runs=500 and the two arms are
+unpaired (the on-arm consumes one extra rng.random() per lap and shifts the
+whole downstream random stream). Twelve cells scored at a 95% threshold
+expect about one apparent result from chance alone, so this single marginal
+cell is not treated as a finding.
+
+VERDICT: the safety car does not improve these predictions.
+`with_safety_car=False` stays the default; the mechanism ships, tested, but
+switched off.
 """
 from __future__ import annotations
 

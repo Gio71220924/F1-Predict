@@ -41,6 +41,18 @@ def load_model():
     return model.load()
 
 
+@st.cache_data
+def load_temp_comparison():
+    """MAE with and without the tyre-age x track-temperature interaction.
+
+    Not persisted in models/degradation.json -- that file only carries the
+    fitted (with_temp=True) result. Recomputed here, cached, so the Model
+    card's improvement sentence is derived from two live numbers rather
+    than a hardcoded percentage that can go stale independently of them.
+    """
+    return model.compare_temp()
+
+
 @st.cache_data(show_spinner=False)
 def outcome_intervals(path, fraction=None):
     """Per outcome: the Brier gap and its 95% interval, or None if no table.
@@ -695,6 +707,7 @@ with replay_tab:
 with card:
     st.header("Model card")
     cv = fitted["cv"]
+    temp_comparison = load_temp_comparison()
     a, b, c = st.columns(3)
     a.metric(
         "MAE (leave-races-out)", f"{cv['mae_mean']:.3f} s", f"+/-{cv['mae_std']:.3f}"
@@ -718,9 +731,11 @@ with card:
     st.warning(
         "**The safety car does not improve these predictions, and the code "
         "for it ships disabled.** Of twelve cells -- three outcomes at four "
-        "points of race distance -- none showed an improvement whose 95% "
-        "interval excluded zero. One, P(points) at quarter distance, was "
-        "significantly WORSE. The other eleven sat inside the interval."
+        "points of race distance -- no cell showed an improvement whose 95% "
+        "interval excluded zero. One, P(points) at quarter distance, fell "
+        "marginally outside on the worse side, by less than the "
+        "simulation's own run-to-run noise. The other eleven sat inside "
+        "the interval."
     )
     st.caption(
         "This is not a finding that safety cars do not matter. Their effect "
@@ -729,7 +744,10 @@ with card:
         "a median 0.25 of what it was. The finding is that eight deployments "
         "and four measurable periods are not enough to model one usefully -- "
         "how often and how long one happens can only be guessed from a "
-        "sample that small, and the guess adds as much noise as it removes."
+        "sample that small, and the guess adds as much noise as it removes. "
+        "With twelve cells scored at a 95% threshold, about one apparent "
+        "result is expected from chance alone -- which is exactly what the "
+        "single marginal cell above is, not a finding in either direction."
     )
     st.caption(
         "The prediction that it would fail was written into the design "
@@ -759,9 +777,11 @@ and the shared-slope baseline carries no temperature term, so it is no longer a 
 test. The per-compound numbers above are reported, not validated.
 
 **The tyre-age by track-temperature interaction was measured, and kept.**
-Leave-races-out MAE improved from 0.6161 s to {cv['mae_mean']:.4f} s, a 3.6% reduction,
-clearing a 1% threshold that was set in advance so noise could not be promoted to a
-finding.
+Leave-races-out MAE improved from {temp_comparison['without']:.4f} s to
+{temp_comparison['with']:.4f} s, a
+{(temp_comparison['without'] - temp_comparison['with']) / temp_comparison['without']:.2%}
+reduction, clearing a 1% threshold that was set in advance so noise could not be
+promoted to a finding.
 
 **Pit loss is a green-flag figure by definition.** Pooled across every stop it reaches
 59 s at some circuits, because teams pit under safety car whenever they can, and the
@@ -774,7 +794,7 @@ Other limits:
 - SOFT, MEDIUM and HARD are relative to each circuit's Pirelli allocation, so "HARD" is not the same rubber everywhere. Pooling across circuits blurs the compounds together.
 - 2026 energy deployment strongly affects lap time and is invisible in timing data. It lands in the residual.
 - Wet running is excluded entirely.
-- Cross-validation uses {len(fitted['rounds'])} groups, so the fold spread of +/-{cv['mae_std']:.3f} s is wide by construction.
+- Cross-validation uses {len(cv['mae_folds'])} folds (`GroupKFold` capped at 5, over {len(fitted['rounds'])} race groups), so the fold spread of +/-{cv['mae_std']:.3f} s is wide by construction.
 - The simulator assumes clean air.
 """
     )

@@ -58,3 +58,21 @@ def test_compression_handles_a_field_of_one():
     cumulative = {"AAA": 100.0}
     safety.compress(cumulative, ["AAA"], ratio=0.25)
     assert cumulative["AAA"] == pytest.approx(100.0)
+
+
+def test_a_deployment_is_counted_once_however_long_it_lasts():
+    """Round 6 of 2026 had three safety cars across 78 laps.
+
+    Counting status samples instead of transitions would score a fourteen
+    lap period as many deployments, and the hazard would come out an order
+    of magnitude too high. Only the transition into a safety car counts.
+    """
+    status = pd.Series(["1", "1", "4", "4", "4", "1", "1", "4", "1"])
+    assert safety.deployments_from_status(status) == 2
+
+    # A race that starts under a safety car still counts that one.
+    assert safety.deployments_from_status(pd.Series(["4", "4", "1"])) == 1
+
+    # Yellow flags and virtual safety cars are not safety cars.
+    assert safety.deployments_from_status(pd.Series(["2", "6", "1", "6"])) == 0
+    assert safety.deployments_from_status(pd.Series([], dtype=str)) == 0

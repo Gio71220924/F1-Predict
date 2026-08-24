@@ -9,7 +9,11 @@ would be inventing precision.
 """
 from __future__ import annotations
 
+import logging
+import warnings
+
 import numpy as np
+import pandas as pd
 
 # Median of four measured periods, whose ratios were 0.18, 0.24, 0.26 and
 # 0.34. The spread between the leader and the last car on the lead lap ends
@@ -67,3 +71,52 @@ def compress(
     leader = min(cumulative[driver] for driver in order)
     for driver in order:
         cumulative[driver] = leader + (cumulative[driver] - leader) * ratio
+
+
+SC_CODE = "4"
+
+
+def deployments_from_status(status: pd.Series) -> int:
+    """How many separate safety car periods a status series contains.
+
+    Counts transitions INTO a safety car, not samples of one. FastF1's
+    track status is sampled through the session, so a fourteen lap period
+    appears many times over; counting samples would put round 6 of 2026 at
+    dozens of deployments rather than three, and the hazard an order of
+    magnitude too high.
+
+    A status can carry several codes at once, so membership is tested
+    rather than equality.
+    """
+    count, previous = 0, None
+    for value in status.astype(str):
+        active = SC_CODE in value
+        if active and not (previous is not None and SC_CODE in previous):
+            count += 1
+        previous = value
+    return count
+
+
+def count_by_round(year: int, rounds: list[int]) -> dict[int, tuple[int, int]]:
+    """Deployments and racing laps for each round, keyed by round.
+
+    Returned per round rather than summed so a caller can add up only the
+    rounds it is allowed to see. With eight events in the whole season, one
+    leaked event is an eighth of the evidence, so the summing belongs at the
+    call site where the training split is known.
+    """
+    import fastf1
+
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    out = {}
+    for round_no in rounds:
+        session = fastf1.get_session(year, int(round_no), "R")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            session.load(telemetry=False, weather=False, messages=False)
+        out[int(round_no)] = (
+            deployments_from_status(session.track_status["Status"]),
+            int(session.laps["LapNumber"].max()),
+        )
+    return out

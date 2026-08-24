@@ -21,6 +21,7 @@ PIT_LOSS_S = {
     "British Grand Prix": (19.86, 22),
     "Canadian Grand Prix": (27.77, 15),
     "Chinese Grand Prix": (33.07, 4),
+    "Dutch Grand Prix": (19.74, 37),
     "Hungarian Grand Prix": (22.51, 34),
     "Japanese Grand Prix": (23.86, 14),
     "Miami Grand Prix": (18.89, 20),

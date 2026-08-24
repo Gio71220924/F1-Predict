@@ -311,3 +311,28 @@ def test_the_state_columns_the_simulator_needs_are_all_produced():
     frame = _laps([["AAA", 1, 1.0, "MEDIUM", 1, 1, 92.0, False]])
     state = midrace.state_from_laps(frame, lap=1)
     assert set(midrace.STATE_COLUMNS) == set(state.columns)
+
+
+def test_the_safety_car_hazard_excludes_the_round_being_scored():
+    """Eight events in a season means one leaked event is an eighth of it.
+
+    The hazard that scores a round must not have been shaped by that
+    round's own safety cars. This is the same leave-one-race-out rule the
+    tyre coefficients, the overtaking cost and the DNF hazard already
+    follow, and it bites harder here because the sample is so small.
+    """
+    from f1_predict import safety
+
+    counts = {1: (1, 60), 2: (0, 55), 6: (3, 78), 9: (1, 50)}
+
+    def fold(held_out):
+        train = {r: v for r, v in counts.items() if r != held_out}
+        return safety.hazard(
+            sum(d for d, _ in train.values()), sum(l for _, l in train.values())
+        )
+
+    # Round 6 carries three of the five events. Holding it out must move the
+    # hazard a long way; if it does not, the split is not being applied.
+    assert fold(6) == pytest.approx(2 / 165)
+    assert fold(2) == pytest.approx(5 / 188)
+    assert fold(6) < fold(2)

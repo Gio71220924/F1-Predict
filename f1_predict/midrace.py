@@ -234,7 +234,9 @@ def _training_table(results, train, year, fraction, total_by_round, skipped):
     return position_baseline(pd.DataFrame(observations))
 
 
-def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict]:
+def predictions(
+    year: int = 2026, n_runs: int = 500, with_safety_car: bool = False
+) -> tuple[pd.DataFrame, dict]:
     """One row per driver per scored lap, leave-one-race-out.
 
     Every input to the simulation, and whether it is knowable at lap N of
@@ -294,6 +296,14 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
         for r in sorted(results["round"].unique())
     }
 
+    from f1_predict import safety
+
+    sc_counts = (
+        safety.count_by_round(year, [int(r) for r in sorted(laps["round"].unique())])
+        if with_safety_car
+        else {}
+    )
+
     rows = []
     skipped = []
     for round_no in sorted(results["round"].unique()):
@@ -313,6 +323,18 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
             np.median([c for r, c in own_cost.items() if r != round_no])
         )
         dnf_per_lap = race.dnf_hazard(train["finished"], total_laps)
+
+        # Training rounds only. With eight events across the season, this
+        # round's own safety cars would be an eighth of the evidence used to
+        # score it.
+        if with_safety_car:
+            train_sc = {r: v for r, v in sc_counts.items() if r != round_no}
+            sc_per_lap = safety.hazard(
+                sum(d for d, _ in train_sc.values()),
+                sum(l for _, l in train_sc.values()),
+            )
+        else:
+            sc_per_lap = 0.0
 
         for fraction in SCORE_FRACTIONS:
             lap = max(1, int(round(total_laps * fraction)))
@@ -349,7 +371,7 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
                 coef=coef, total_laps=total_laps, pit_loss_s=20.0,
                 pit_lap=total_laps // 2, overtake_cost=overtake_cost,
                 dnf_per_lap=dnf_per_lap, noise_s=noise_s,
-                state=fold_state, start_lap=lap,
+                state=fold_state, start_lap=lap, sc_per_lap=sc_per_lap,
             )
 
             table = _training_table(
@@ -380,13 +402,16 @@ def predictions(year: int = 2026, n_runs: int = 500) -> tuple[pd.DataFrame, dict
         "n_races": int(frame["round"].nunique()),
         "fractions": list(SCORE_FRACTIONS),
         "skipped": skipped,
+        "with_safety_car": with_safety_car,
     }
     return frame, meta
 
 
-def evaluate(year: int = 2026, n_runs: int = 500) -> dict:
+def evaluate(
+    year: int = 2026, n_runs: int = 500, with_safety_car: bool = False
+) -> dict:
     """Brier per fraction of race distance, model against baseline."""
-    frame, meta = predictions(year, n_runs)
+    frame, meta = predictions(year, n_runs, with_safety_car=with_safety_car)
     curve = {}
     for fraction in SCORE_FRACTIONS:
         at = frame[frame["fraction"] == fraction]

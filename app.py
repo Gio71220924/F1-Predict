@@ -714,6 +714,34 @@ with card:
         f"{fitted['n_dropped_null']} laps were dropped for a missing tyre age."
     )
 
+    st.subheader("Safety cars were modelled, measured, and switched back off")
+    st.warning(
+        "**The safety car does not improve these predictions, and the code "
+        "for it ships disabled.** Of twelve cells -- three outcomes at four "
+        "points of race distance -- none showed an improvement whose 95% "
+        "interval excluded zero. One, P(points) at quarter distance, was "
+        "significantly WORSE. The other eleven sat inside the interval."
+    )
+    st.caption(
+        "This is not a finding that safety cars do not matter. Their effect "
+        "on track is large and was measured: across four periods in 2026 the "
+        "spread between the leader and the last car on the lead lap fell to "
+        "a median 0.25 of what it was. The finding is that eight deployments "
+        "and four measurable periods are not enough to model one usefully -- "
+        "how often and how long one happens can only be guessed from a "
+        "sample that small, and the guess adds as much noise as it removes."
+    )
+    st.caption(
+        "The prediction that it would fail was written into the design "
+        "document before any of the code existed, so that a negative result "
+        "could not be explained away afterwards and a positive one would "
+        "have carried the weight of being predicted against. Nothing was "
+        "tuned to rescue it: not the compression constant, not the observed "
+        "durations, not the number of simulation runs. With twelve cells and "
+        "a 5% threshold, a few attempts would very likely have manufactured "
+        "one apparent win."
+    )
+
     if fitted.get("compound_ordering_note"):
         st.subheader("Compound ordering is not identifiable")
         st.warning(fitted["compound_ordering_note"])
@@ -741,12 +769,12 @@ in-lap plus out-lap excess then measures the caution period rather than the pit 
 
 Other limits:
 
-- Eleven races, each circuit raced once. Per-circuit degradation is not identifiable and is not claimed.
+- {len(fitted['rounds'])} races, each circuit raced once. Per-circuit degradation is not identifiable and is not claimed.
 - Bahrain and Saudi Arabia are absent from F1's own 2026 timing archive. They were not dropped by choice.
 - SOFT, MEDIUM and HARD are relative to each circuit's Pirelli allocation, so "HARD" is not the same rubber everywhere. Pooling across circuits blurs the compounds together.
 - 2026 energy deployment strongly affects lap time and is invisible in timing data. It lands in the residual.
 - Wet running is excluded entirely.
-- Cross-validation uses 11 groups, so the fold spread of +/-{cv['mae_std']:.3f} s is wide by construction.
+- Cross-validation uses {len(fitted['rounds'])} groups, so the fold spread of +/-{cv['mae_std']:.3f} s is wide by construction.
 - The simulator assumes clean air.
 """
     )

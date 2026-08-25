@@ -225,16 +225,88 @@ def test_odds_refuses_a_lap_past_the_scheduled_distance():
 
 
 def test_the_display_states_how_stale_it_is():
-    """The number on screen describes a lap already completed.
+    """The number on screen is an upper bound on the lag, not a readout.
 
-    Spec: "It must never present itself as instantaneous." A refresh
-    costs 3-4 seconds and runs on a 30-second timer, so the display is
-    tens of seconds behind the cars. Under one lap at Monza, and never
-    zero. A live feed that hides its own lag is the kind of false
-    confidence this project exists to avoid.
+    Spec: "It must never present itself as instantaneous." The caption is
+    drawn once and then sits on screen for the whole refresh interval, so
+    a caller passes the read's elapsed time plus that interval -- the
+    number `describe_age` prints has to stay true for as long as it is
+    visible, which is what "at most" pins here. A live feed that hides
+    its own lag is the kind of false confidence this project exists to
+    avoid.
     """
     age = live.describe_age(seconds=34.0, lap=27, total_laps=53)
 
     assert "27" in age and "53" in age
     assert "34" in age
+    assert "at most" in age
     assert "live now" not in age.lower()
+    assert "ago" not in age.lower(), "'ago' claims a precise time, not a bound"
+
+
+def test_run_odds_pins_the_three_argument_history_inputs_call(monkeypatch):
+    """`_report` and the Live tab both run this sequence on every refresh.
+
+    A stray two-argument `history_inputs(year, round_no)` call would be
+    swallowed by the tab's broad `except Exception` and would only show up
+    as a repeating `st.error` during the Practice 1 rehearsal -- the one
+    session that cannot be re-run. The fake `history_inputs` here asserts
+    it receives `total_laps`, so a regression to two arguments fails this
+    test with a `TypeError` instead of passing silently.
+    """
+    from tests.conftest import make_raw_laps
+    from f1_predict import midrace
+
+    raw = make_raw_laps(drivers=("VER", "NOR"), n_laps=12)
+    raw["Position"] = 1.0
+    raw.loc[raw["Driver"] == "NOR", "Position"] = 2.0
+    frame = midrace.laps_frame(raw)
+    read_meta = {"errorcount": 2, "total_laps": 53, "last_lap": 12, "n_drivers": 2}
+
+    def fake_read_laps(recording, *, year, round_no, session_name="R"):
+        return frame, read_meta
+
+    def fake_history_inputs(year, round_no, total_laps):
+        # A two-argument call site regresses to this raising TypeError
+        # (missing the required `total_laps`), which fails this test.
+        assert total_laps == 53, "history_inputs must receive the race's total_laps"
+        return {
+            "coef": {"age_MEDIUM": 0.04},
+            "noise_s": 0.5,
+            "overtake_cost": 0.6,
+            "dnf_per_lap": 0.002,
+            "baseline_table": None,
+            "rounds": [1, 2, 3],
+        }
+
+    monkeypatch.setattr(live, "read_laps", fake_read_laps)
+    monkeypatch.setattr(live, "history_inputs", fake_history_inputs)
+
+    out, meta, odds_meta, elapsed = live.run_odds(
+        "anything.txt", year=2026, round_no=13, n_runs=50
+    )
+
+    assert meta["errorcount"] == 2
+    assert odds_meta["lap"] == 12
+    assert odds_meta["total_laps"] == 53
+    assert elapsed >= 0.0
+    assert list(out.index) == ["VER", "NOR"]
+
+
+def test_run_odds_refuses_a_recording_with_no_scheduled_lap_count(monkeypatch):
+    """No TotalLaps means no race distance -- proceeding with None is a bug.
+
+    TotalLaps arrives early in a session but not in its first seconds, so
+    this is a real, reachable state, not a hypothetical one. `run_odds`
+    must raise rather than hand `None` to `history_inputs` and `odds` as a
+    race distance.
+    """
+    def fake_read_laps(recording, *, year, round_no, session_name="R"):
+        return pd.DataFrame(), {
+            "errorcount": 0, "total_laps": None, "last_lap": 0, "n_drivers": 0,
+        }
+
+    monkeypatch.setattr(live, "read_laps", fake_read_laps)
+
+    with pytest.raises(ValueError, match="no scheduled lap count"):
+        live.run_odds("anything.txt", year=2026, round_no=13, n_runs=50)

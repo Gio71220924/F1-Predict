@@ -12,6 +12,7 @@ half-written final line, and the prediction. The end-to-end read is
 established at the Practice 1 rehearsal, not here.
 """
 import logging
+import time
 import warnings
 
 import numpy as np
@@ -218,25 +219,35 @@ def history_inputs(year: int, round_no: int, total_laps: int) -> dict:
     }
 
 
-def describe_age(seconds: float, lap: int, total_laps: int) -> str:
-    """One sentence saying how far behind the cars this reading is.
+def run_odds(
+    recording: str, year: int, round_no: int, n_runs: int
+) -> tuple[pd.DataFrame, dict, dict, float]:
+    """Read a recording and simulate the rest of the race from it.
 
-    Shown beside every probability. A refresh takes 3-4 seconds and runs
-    on a timer, so the display trails the race by tens of seconds -- less
-    than one lap, and never zero.
+    `_report` and the Live tab both refresh by running the same sequence:
+    read the recording, confirm it carries a scheduled lap count, build the
+    season's history inputs, simulate forward. Shared here so the two
+    callers cannot drift apart -- a stray two-argument `history_inputs`
+    call from one of them would otherwise only surface as a repeating
+    error during the one session that cannot be re-run.
+
+    Returns `(odds frame, read meta, odds meta, elapsed seconds)`. The read
+    meta carries `errorcount`; the odds meta carries `lap` and the
+    `total_laps` the race was simulated to. `elapsed` covers the whole
+    sequence -- read through simulate -- because that is what a caller on
+    a refresh timer needs to bound how old the numbers can be, not just
+    how long the read itself took.
+
+    Raises `ValueError` when the recording carries no scheduled lap count
+    yet -- TotalLaps arrives early in a session but not in its first
+    seconds -- so each caller presents that its own way instead of both
+    crashing on a `None` race distance.
     """
-    return (
-        f"Lap {lap} of {total_laps}, read {seconds:.0f} s ago. "
-        f"These are the cars as they crossed the line, not as they are now."
-    )
-
-
-def _report(recording: str, year: int, round_no: int, n_runs: int) -> None:
+    started = time.monotonic()
     frame, meta = read_laps(recording, year=year, round_no=round_no)
-    print(f"read {meta['n_drivers']} drivers, {meta['errorcount']} bad lines")
     total_laps = meta["total_laps"]
     if total_laps is None:
-        raise SystemExit(
+        raise ValueError(
             "the recording carries no scheduled lap count, so there is no "
             "race distance to simulate to. TotalLaps arrives early in a "
             "session but not in its first seconds."
@@ -246,7 +257,34 @@ def _report(recording: str, year: int, round_no: int, n_runs: int) -> None:
         frame, lap=meta["last_lap"], total_laps=total_laps,
         inputs=inputs, n_runs=n_runs,
     )
-    print(describe_age(0.0, odds_meta["lap"], total_laps))
+    elapsed = time.monotonic() - started
+    return out, meta, odds_meta, elapsed
+
+
+def describe_age(seconds: float, lap: int, total_laps: int) -> str:
+    """One sentence saying the oldest this reading can be, not how old it is.
+
+    Shown beside every probability. `seconds` must be an upper bound that
+    stays true for as long as the caption is on screen -- the caption is
+    drawn once and then sits there for the whole refresh interval, so a
+    caller on a timer passes the read's own elapsed time PLUS that
+    interval, not the elapsed time alone. The caption outlives the read
+    that produced it; the number has to stay honest for as long as it is
+    visible, not just at the instant it is drawn.
+    """
+    return (
+        f"Lap {lap} of {total_laps}, at most {seconds:.0f} s old. "
+        f"These are the cars as they crossed the line, not as they are now."
+    )
+
+
+def _report(recording: str, year: int, round_no: int, n_runs: int) -> None:
+    try:
+        out, meta, odds_meta, elapsed = run_odds(recording, year, round_no, n_runs)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    print(f"read {meta['n_drivers']} drivers, {meta['errorcount']} bad lines")
+    print(describe_age(elapsed, odds_meta["lap"], odds_meta["total_laps"]))
     print(out.to_string(float_format=lambda v: f"{v:.3f}"))
 
 

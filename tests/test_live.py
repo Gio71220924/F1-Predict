@@ -134,36 +134,44 @@ def test_recorder_can_append_for_a_restart(monkeypatch):
 def test_odds_predicts_forward_from_the_live_state():
     """Probabilities for the rest of the race, from the race so far.
 
-    Three things are pinned. First, the leader must not come out behind: a
-    driver a minute up the road with the same pace has to hold the higher
-    win probability, and if that inverts the state is reaching
-    `simulate_once` wrong. Second, every probability is ordered the way a
-    probability must be -- P(points) at least P(podium) at least P(win)
-    per driver, since winning implies a podium implies points. Third, LEC's
-    win chance stays in the low single digits per mille: with equal pace,
-    a same-pace `VER > LEC` inequality alone survives `start_lap=0`
-    (proven algebraically -- `simulate_once`'s elapsed_s correction cancels
-    a uniform-pace time gap identically regardless of `start_lap`, so a
-    bare ordering check is toothless against that mutation here). What DOES
-    move is the size of the long tail: replaying the whole 53-lap race
-    instead of the 33 that actually remain hands the trailing car twice as
-    many laps of independent noise to fluke a comeback through, and that
-    inflates LEC's probability measurably and reproducibly (checked across
-    ten seeds at n_runs=2000: correct <=0.0045, mutated >=0.0070, no
-    overlap). n_runs is raised from a fast-test 300 to `odds`'s own default
-    of 2000 because the effect being pinned lives in a tail too thin for
-    300 draws to resolve without seed luck.
+    Two things are pinned: the leader must not come out behind, and every
+    probability is ordered the way a probability must be (points >=
+    podium >= win). VER and NOR share one long stint (tyre age 20 at lap
+    20); LEC runs short stints (age 2) and starts a real gap behind.
+    Equal tyre ages could not pin the first property -- `simulate_once`'s
+    elapsed_s correction cancels a uniform-pace time gap identically
+    regardless of `start_lap` -- but a tyre-age spread is a real pace
+    difference that compounds with the number of laps simulated, so
+    replaying all 53 laps instead of the 33 that remain hands LEC's
+    fresher tyres enough ground to flip the win order.
     """
     from tests.conftest import make_raw_laps
     from f1_predict import midrace
 
-    raw = make_raw_laps(drivers=("VER", "NOR", "LEC"), n_laps=20, stint_length=10)
+    leaders = make_raw_laps(drivers=("VER", "NOR"), n_laps=20, stint_length=None)
+    trailer = make_raw_laps(drivers=("LEC",), n_laps=20, stint_length=2)
+    # Concatenating two frames that are each all-NaT in PitInTime/PitOutTime
+    # hits a pandas-internal path that emits a bare-unit NaT
+    # DeprecationWarning regardless of dtype -- dropped here and rebuilt in
+    # one shot afterward, exactly as make_raw_laps builds them for a single
+    # call.
+    pit_cols = ["PitInTime", "PitOutTime"]
+    raw = pd.concat(
+        [leaders.drop(columns=pit_cols), trailer.drop(columns=pit_cols)],
+        ignore_index=True,
+    )
+    for column in pit_cols:
+        raw[column] = pd.Series(pd.NaT, index=raw.index, dtype="timedelta64[ns]")
     raw["Position"] = 1.0
     raw.loc[raw["Driver"] == "NOR", "Position"] = 2.0
     raw.loc[raw["Driver"] == "LEC", "Position"] = 3.0
-    # A real gap, so the leader's advantage is load-bearing rather than a
-    # coin flip the seed happens to win.
-    raw.loc[raw["Driver"] == "LEC", "Time"] += pd.Timedelta(60.0, unit="s")
+    # Centred in the measured 31-44s window (this three-driver fixture,
+    # n_runs=400, seeds 0-5): below it the leader hasn't even won the
+    # correct simulation; above it LEC's fresher tyres aren't enough to
+    # flip the mutated one. 38s sits mid-window with the widest margin on
+    # both sides (correct VER-LEC ~+0.48 to +0.53, mutated ~-0.56 to -0.71
+    # across those seeds).
+    raw.loc[raw["Driver"] == "LEC", "Time"] += pd.Timedelta(38.0, unit="s")
     frame = midrace.laps_frame(raw)
 
     inputs = {
@@ -175,7 +183,7 @@ def test_odds_predicts_forward_from_the_live_state():
         "rounds": [1, 2, 3],
     }
 
-    out, meta = live.odds(frame, lap=20, total_laps=53, inputs=inputs, n_runs=2000)
+    out, meta = live.odds(frame, lap=20, total_laps=53, inputs=inputs, n_runs=400)
 
     assert list(out.index) == ["VER", "NOR", "LEC"]
     for outcome in race.OUTCOMES:
@@ -183,9 +191,6 @@ def test_odds_predicts_forward_from_the_live_state():
     assert (out["p_points"] >= out["p_podium"] - 1e-9).all()
     assert (out["p_podium"] >= out["p_win"] - 1e-9).all()
     assert out.loc["VER", "p_win"] > out.loc["LEC", "p_win"]
-    # The load-bearing check: see the docstring. Correct code measures
-    # 0.0015-0.0045 across ten seeds; start_lap=0 measures 0.0070-0.0135.
-    assert out.loc["LEC", "p_win"] < 0.006
     assert meta["lap"] == 20
     assert meta["laps_left"] == 33
 

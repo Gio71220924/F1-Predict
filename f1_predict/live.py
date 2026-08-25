@@ -11,8 +11,14 @@ use during a session". The tests cover the recorder, the tolerance of a
 half-written final line, and the prediction. The end-to-end read is
 established at the Practice 1 rehearsal, not here.
 """
+import logging
+import warnings
+
+import pandas as pd
 from fastf1.livetiming.client import SignalRClient
 from fastf1.livetiming.data import LiveTimingData
+
+from f1_predict import midrace
 
 
 def record(path: str, timeout: int = 0, append: bool = False) -> None:
@@ -34,3 +40,48 @@ def record(path: str, timeout: int = 0, append: bool = False) -> None:
         timeout=timeout,
     )
     client.start()
+
+
+def _get_session(year: int, round_no: int, session_name: str):
+    """FastF1's session object. Separate so tests can replace it."""
+    import fastf1
+
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    return fastf1.get_session(year, round_no, session_name)
+
+
+def read_laps(
+    *files: str, year: int, round_no: int, session_name: str = "R"
+) -> tuple[pd.DataFrame, dict]:
+    """The lap frame so far, from one or more recordings of a session.
+
+    Several files are accepted in chronological order because a recorder
+    that dies mid-session restarts into a new one; LiveTimingData detects
+    the overlap itself and drops the duplicates.
+
+    `errorcount` travels out in the meta rather than being logged and
+    forgotten. Reading a file that is still being appended to means the
+    last line is routinely a fragment, so a count of one or two is
+    normal and expected -- but a count in the thousands means the
+    recording is not what this code thinks it is, and the caller has to
+    be able to see the difference.
+    """
+    data = LiveTimingData(*files)
+    data.load()
+
+    session = _get_session(year, round_no, session_name)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        session.load(
+            livedata=data, telemetry=False, weather=False, messages=False
+        )
+
+    frame = midrace.laps_frame(session.laps)
+    meta = {
+        "errorcount": int(data.errorcount),
+        "total_laps": int(session.total_laps) if session.total_laps else None,
+        "last_lap": int(frame["lap_number"].max()) if not frame.empty else 0,
+        "n_drivers": int(frame["driver"].nunique()) if not frame.empty else 0,
+    }
+    return frame, meta

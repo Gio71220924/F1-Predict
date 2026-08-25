@@ -1,5 +1,4 @@
 """Streamlit UI for the 2026 tyre, qualifying and race-outcome models."""
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -690,30 +689,28 @@ with live_tab:
     else:
         @st.fragment(run_every=every)
         def live_panel():
-            started = time.monotonic()
             try:
-                frame, meta = live.read_laps(
-                    recording, year=2026, round_no=int(round_no)
+                out, meta, odds_meta, elapsed = live.run_odds(
+                    recording, year=2026, round_no=int(round_no), n_runs=int(runs)
                 )
-                total_laps = meta["total_laps"]
-                if total_laps is None:
-                    st.warning(
-                        "The recording carries no scheduled lap count yet. "
-                        "TotalLaps arrives early in a session but not in "
-                        "its first seconds."
-                    )
-                    return
-                inputs = live.history_inputs(2026, int(round_no), total_laps)
-                out, odds_meta = live.odds(
-                    frame, lap=meta["last_lap"], total_laps=total_laps,
-                    inputs=inputs, n_runs=int(runs),
-                )
+            except ValueError as exc:
+                st.warning(str(exc))
+                return
             except Exception as exc:  # noqa: BLE001 - one bad read must not kill the tab
                 st.error(f"{type(exc).__name__}: {exc}")
                 return
 
-            elapsed = time.monotonic() - started
-            st.caption(live.describe_age(elapsed, odds_meta["lap"], total_laps))
+            # `elapsed` covers only this refresh's read-and-simulate. The
+            # caption below stays on screen for the whole refresh interval,
+            # so the bound it states must add `every` -- otherwise it
+            # understates the true lag by up to the length of that
+            # interval, which is exactly the false confidence this tab
+            # exists to avoid.
+            st.caption(
+                live.describe_age(
+                    elapsed + every, odds_meta["lap"], odds_meta["total_laps"]
+                )
+            )
             if meta["errorcount"] > 20:
                 st.warning(
                     f"{meta['errorcount']} unparseable lines in the "

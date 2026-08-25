@@ -140,11 +140,19 @@ def laps_frame(raw: pd.DataFrame) -> pd.DataFrame:
     but the frame `state_from_laps` consumes has to be identical, and two
     copies of this mapping would drift the first time a column changed.
 
-    `lap_seconds` is here for the live path only. The historical path
-    reads pace from `data/processed/laps.csv`, which a race in progress
-    has no row in, so the live predictor derives pace from these laps
-    instead. It costs the historical path nothing: `state_from_laps`
-    selects STATE_COLUMNS and the extra column falls away.
+    `lap_seconds`, `track_status` and `is_accurate` are here for the live
+    path only. The historical path reads pace from
+    `data/processed/laps.csv`, which a race in progress has no row in, so
+    the live predictor derives pace from these laps instead -- and it has
+    to reject the same laps `data.filter_laps` already rejected in that
+    CSV, or the two paths would be reading different definitions of
+    "pace". `track_status` and `is_accurate` are the two fields that
+    rejection needs and are FastF1's raw `TrackStatus` and `IsAccurate`
+    passed through unchanged, so `f1_predict.data`'s existing filter can
+    be pointed straight at this frame.
+
+    Carrying them costs the historical path nothing: `state_from_laps`
+    ends in `ordered[STATE_COLUMNS]` and every extra column falls away.
     """
     return pd.DataFrame(
         {
@@ -157,6 +165,8 @@ def laps_frame(raw: pd.DataFrame) -> pd.DataFrame:
             "elapsed_s": raw["Time"].dt.total_seconds().values,
             "pitted": (raw["PitInTime"].notna() | raw["PitOutTime"].notna()).values,
             "lap_seconds": raw["LapTime"].dt.total_seconds().values,
+            "track_status": raw["TrackStatus"].values,
+            "is_accurate": raw["IsAccurate"].values,
         }
     ).dropna(subset=["position", "elapsed_s"])
 

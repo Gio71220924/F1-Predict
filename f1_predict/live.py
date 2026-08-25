@@ -165,7 +165,7 @@ def odds(
     return out, meta
 
 
-def history_inputs(year: int, round_no: int) -> dict:
+def history_inputs(year: int, round_no: int, total_laps: int) -> dict:
     """Everything fitted on rounds that finished BEFORE `round_no`.
 
     Strictly earlier, never `!=`. A leave-one-out fit is right for
@@ -173,6 +173,11 @@ def history_inputs(year: int, round_no: int) -> dict:
     predicted forward it would train on rounds that had not been run
     yet. This project has shipped that bug once and it is the single
     easiest way to produce a confident, meaningless number.
+
+    `total_laps` has no default: `dnf_hazard` inverts a survival
+    relationship over the real race distance, so a hazard solved at the
+    wrong lap count is miscalibrated everywhere except the one race whose
+    length happens to match a hardcoded guess.
     """
     from f1_predict import model, sessions
 
@@ -207,7 +212,7 @@ def history_inputs(year: int, round_no: int) -> dict:
         "coef": fitted["coef"],
         "noise_s": model.residual_sigma(train_laps, fitted["coef"], with_temp=True),
         "overtake_cost": overtake_cost,
-        "dnf_per_lap": race.dnf_hazard(results["finished"], 53),
+        "dnf_per_lap": race.dnf_hazard(results["finished"], total_laps),
         "baseline_table": None,
         "rounds": past,
     }

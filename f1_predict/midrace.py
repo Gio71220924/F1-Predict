@@ -131,6 +131,36 @@ def position_baseline(observations: pd.DataFrame) -> pd.DataFrame:
     return frame.groupby("position_at_n")[list(race.OUTCOMES)].mean()
 
 
+def laps_frame(raw: pd.DataFrame) -> pd.DataFrame:
+    """FastF1's `session.laps` in this project's column names.
+
+    Pulled out of `race_state` so the live feed and the historical path
+    build their lap frame from one piece of code. They read different
+    session objects -- one from the archive, one from a live recording --
+    but the frame `state_from_laps` consumes has to be identical, and two
+    copies of this mapping would drift the first time a column changed.
+
+    `lap_seconds` is here for the live path only. The historical path
+    reads pace from `data/processed/laps.csv`, which a race in progress
+    has no row in, so the live predictor derives pace from these laps
+    instead. It costs the historical path nothing: `state_from_laps`
+    selects STATE_COLUMNS and the extra column falls away.
+    """
+    return pd.DataFrame(
+        {
+            "driver": raw["Driver"].values,
+            "lap_number": raw["LapNumber"].astype(float).values,
+            "position": raw["Position"].astype(float).values,
+            "compound": raw["Compound"].values,
+            "tyre_age": raw["TyreLife"].astype(float).values,
+            "stint": raw["Stint"].astype(float).values,
+            "elapsed_s": raw["Time"].dt.total_seconds().values,
+            "pitted": (raw["PitInTime"].notna() | raw["PitOutTime"].notna()).values,
+            "lap_seconds": raw["LapTime"].dt.total_seconds().values,
+        }
+    ).dropna(subset=["position", "elapsed_s"])
+
+
 def race_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
     """`state_from_laps` for one real race, read from FastF1.
 
@@ -145,24 +175,10 @@ def race_state(year: int, round_no: int, lap: int) -> pd.DataFrame:
         warnings.simplefilter("ignore")
         session.load(telemetry=False, weather=False, messages=False)
 
-    raw = session.laps
-    frame = pd.DataFrame(
-        {
-            "driver": raw["Driver"].values,
-            "lap_number": raw["LapNumber"].astype(float).values,
-            "position": raw["Position"].astype(float).values,
-            "compound": raw["Compound"].values,
-            "tyre_age": raw["TyreLife"].astype(float).values,
-            "stint": raw["Stint"].astype(float).values,
-            "elapsed_s": raw["Time"].dt.total_seconds().values,
-            "pitted": (raw["PitInTime"].notna() | raw["PitOutTime"].notna()).values,
-        }
-    ).dropna(subset=["position", "elapsed_s"])
-
     # TyreLife nulls (about 2% of laps) are filled inside state_from_laps,
     # after it has already cut the frame to laps at or before N -- see the
     # comment there for why the fill lives there rather than here.
-    return state_from_laps(frame, lap)
+    return state_from_laps(laps_frame(session.laps), lap)
 
 
 _STATE_CACHE: dict[tuple[int, int, int], pd.DataFrame] = {}

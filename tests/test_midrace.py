@@ -336,3 +336,34 @@ def test_the_safety_car_hazard_excludes_the_round_being_scored():
     assert fold(6) == pytest.approx(2 / 165)
     assert fold(2) == pytest.approx(5 / 188)
     assert fold(6) < fold(2)
+
+
+def test_laps_frame_feeds_state_from_laps_unchanged():
+    """The seam the whole live subsystem rests on.
+
+    `laps_frame` is the only producer of the frame `state_from_laps`
+    consumes, and the live path and the historical path both go through
+    it. A column renamed on either side would break the live feed
+    silently -- `state_from_laps` would return an empty frame and the app
+    would show an empty table rather than an error.
+    """
+    from tests.conftest import make_raw_laps
+
+    raw = make_raw_laps(drivers=("VER", "NOR"), n_laps=10)
+    raw["Position"] = 1.0
+    raw.loc[raw["Driver"] == "NOR", "Position"] = 2.0
+
+    frame = midrace.laps_frame(raw)
+
+    assert set(frame.columns) == {
+        "driver", "lap_number", "position", "compound", "tyre_age",
+        "stint", "elapsed_s", "pitted", "lap_seconds",
+    }
+    # Real lap times, not nulls: the live predictor derives pace from this
+    # column and a frame of NaN would silently drop every driver.
+    assert frame["lap_seconds"].notna().all()
+    assert (frame["lap_seconds"] > 0).all()
+
+    state = midrace.state_from_laps(frame, 10)
+    assert list(state.index) == ["VER", "NOR"]
+    assert list(state.columns) == midrace.STATE_COLUMNS

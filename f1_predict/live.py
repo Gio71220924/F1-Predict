@@ -14,11 +14,12 @@ established at the Practice 1 rehearsal, not here.
 import logging
 import warnings
 
+import numpy as np
 import pandas as pd
 from fastf1.livetiming.client import SignalRClient
 from fastf1.livetiming.data import LiveTimingData
 
-from f1_predict import midrace
+from f1_predict import midrace, race
 
 
 def record(path: str, timeout: int = 0, append: bool = False) -> None:
@@ -85,3 +86,128 @@ def read_laps(
         "n_drivers": int(frame["driver"].nunique()) if not frame.empty else 0,
     }
     return frame, meta
+
+
+def odds(
+    frame: pd.DataFrame,
+    lap: int,
+    total_laps: int,
+    inputs: dict,
+    pit_loss_s: float = 20.0,
+    n_runs: int = 2000,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, dict]:
+    """Win, podium and points probabilities for the rest of the race.
+
+    Pure: everything race-specific arrives in `frame` and everything
+    season-specific in `inputs`. No network, no files. That is what makes
+    the arithmetic here testable while the reading around it is not.
+
+    Pace is each driver's median lap from their OWN laps up to `lap` --
+    the same rule the mid-race evaluation used, and the strongest signal
+    available from a race in progress. Nothing after `lap` is read; the
+    state is cut at it and the pace is cut at it.
+    """
+    if lap > total_laps:
+        raise ValueError(
+            f"lap {lap} is past the scheduled {total_laps}-lap distance. "
+            f"There is no race left to simulate."
+        )
+
+    state = midrace.state_from_laps(frame, lap)
+    if state.empty:
+        raise ValueError(f"no running drivers in the state at lap {lap}")
+
+    seen = frame[frame["lap_number"] <= lap]
+    pace = seen.groupby("driver")["lap_seconds"].median()
+    drivers = [d for d in state.index if d in pace.index and pd.notna(pace[d])]
+    dropped = [d for d in state.index if d not in drivers]
+    if len(drivers) < 2:
+        raise ValueError(
+            f"only {len(drivers)} drivers have both a state and a lap time "
+            f"at lap {lap}"
+        )
+
+    state = state.loc[drivers]
+    simulated = race.probabilities(
+        n_runs=n_runs,
+        seed=seed,
+        pace=pace.reindex(drivers),
+        grid=state["position"],
+        coef=inputs["coef"],
+        total_laps=total_laps,
+        pit_loss_s=pit_loss_s,
+        pit_lap=total_laps // 2,
+        overtake_cost=inputs["overtake_cost"],
+        dnf_per_lap=inputs["dnf_per_lap"],
+        noise_s=inputs["noise_s"],
+        state=state,
+        start_lap=lap,
+    )
+
+    out = simulated.join(state["position"].rename("position_now"))
+    table = inputs.get("baseline_table")
+    if table is not None:
+        for driver in out.index:
+            slot = race.baseline_for(table, float(out.loc[driver, "position_now"]))
+            for outcome in race.OUTCOMES:
+                out.loc[driver, f"base_{outcome}"] = float(slot[outcome])
+    out = out.sort_values("position_now")
+
+    meta = {
+        "lap": lap,
+        "total_laps": total_laps,
+        "laps_left": total_laps - lap,
+        "n_drivers": len(drivers),
+        "dropped_no_pace": dropped,
+        "history_rounds": inputs["rounds"],
+    }
+    return out, meta
+
+
+def history_inputs(year: int, round_no: int) -> dict:
+    """Everything fitted on rounds that finished BEFORE `round_no`.
+
+    Strictly earlier, never `!=`. A leave-one-out fit is right for
+    evaluating a race that has already happened; for a race being
+    predicted forward it would train on rounds that had not been run
+    yet. This project has shipped that bug once and it is the single
+    easiest way to produce a confident, meaningless number.
+    """
+    from f1_predict import model, sessions
+
+    history = pd.read_csv("data/processed/laps.csv")
+    past = sorted(int(r) for r in history["round"].unique() if int(r) < round_no)
+    if not past:
+        raise ValueError(
+            f"no completed round precedes {year} round {round_no}, so there "
+            f"is no tyre, reliability or overtaking history to simulate from."
+        )
+
+    all_laps, _ = model._load_training_frame("data/processed/laps.csv")
+    train_laps = all_laps[all_laps["round"] < round_no]
+    fitted = model.fit(train_laps, with_temp=True)
+
+    results = pd.concat(
+        [sessions.race_result(year, r).assign(round=r) for r in past],
+        ignore_index=True,
+    )
+    overtake_cost = float(
+        np.median(
+            [
+                race.overtaking_cost(
+                    race.track_pass_rate(sessions.race_positions(year, r))
+                )
+                for r in past
+            ]
+        )
+    )
+
+    return {
+        "coef": fitted["coef"],
+        "noise_s": model.residual_sigma(train_laps, fitted["coef"], with_temp=True),
+        "overtake_cost": overtake_cost,
+        "dnf_per_lap": race.dnf_hazard(results["finished"], 53),
+        "baseline_table": None,
+        "rounds": past,
+    }

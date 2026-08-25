@@ -1,4 +1,7 @@
-from f1_predict import live
+import pandas as pd
+import pytest
+
+from f1_predict import live, race
 
 
 def test_a_half_written_final_line_is_tolerated_and_counted(tmp_path):
@@ -126,3 +129,91 @@ def test_recorder_can_append_for_a_restart(monkeypatch):
     live.record("recording.txt", append=True)
 
     assert seen["filemode"] == "a"
+
+
+def test_odds_predicts_forward_from_the_live_state():
+    """Probabilities for the rest of the race, from the race so far.
+
+    Three things are pinned. First, the leader must not come out behind: a
+    driver a minute up the road with the same pace has to hold the higher
+    win probability, and if that inverts the state is reaching
+    `simulate_once` wrong. Second, every probability is ordered the way a
+    probability must be -- P(points) at least P(podium) at least P(win)
+    per driver, since winning implies a podium implies points. Third, LEC's
+    win chance stays in the low single digits per mille: with equal pace,
+    a same-pace `VER > LEC` inequality alone survives `start_lap=0`
+    (proven algebraically -- `simulate_once`'s elapsed_s correction cancels
+    a uniform-pace time gap identically regardless of `start_lap`, so a
+    bare ordering check is toothless against that mutation here). What DOES
+    move is the size of the long tail: replaying the whole 53-lap race
+    instead of the 33 that actually remain hands the trailing car twice as
+    many laps of independent noise to fluke a comeback through, and that
+    inflates LEC's probability measurably and reproducibly (checked across
+    ten seeds at n_runs=2000: correct <=0.0045, mutated >=0.0070, no
+    overlap). n_runs is raised from a fast-test 300 to `odds`'s own default
+    of 2000 because the effect being pinned lives in a tail too thin for
+    300 draws to resolve without seed luck.
+    """
+    from tests.conftest import make_raw_laps
+    from f1_predict import midrace
+
+    raw = make_raw_laps(drivers=("VER", "NOR", "LEC"), n_laps=20, stint_length=10)
+    raw["Position"] = 1.0
+    raw.loc[raw["Driver"] == "NOR", "Position"] = 2.0
+    raw.loc[raw["Driver"] == "LEC", "Position"] = 3.0
+    # A real gap, so the leader's advantage is load-bearing rather than a
+    # coin flip the seed happens to win.
+    raw.loc[raw["Driver"] == "LEC", "Time"] += pd.Timedelta(60.0, unit="s")
+    frame = midrace.laps_frame(raw)
+
+    inputs = {
+        "coef": {"age_MEDIUM": 0.04},
+        "noise_s": 0.5,
+        "overtake_cost": 0.6,
+        "dnf_per_lap": 0.002,
+        "baseline_table": None,
+        "rounds": [1, 2, 3],
+    }
+
+    out, meta = live.odds(frame, lap=20, total_laps=53, inputs=inputs, n_runs=2000)
+
+    assert list(out.index) == ["VER", "NOR", "LEC"]
+    for outcome in race.OUTCOMES:
+        assert ((out[outcome] >= 0) & (out[outcome] <= 1)).all()
+    assert (out["p_points"] >= out["p_podium"] - 1e-9).all()
+    assert (out["p_podium"] >= out["p_win"] - 1e-9).all()
+    assert out.loc["VER", "p_win"] > out.loc["LEC", "p_win"]
+    # The load-bearing check: see the docstring. Correct code measures
+    # 0.0015-0.0045 across ten seeds; start_lap=0 measures 0.0070-0.0135.
+    assert out.loc["LEC", "p_win"] < 0.006
+    assert meta["lap"] == 20
+    assert meta["laps_left"] == 33
+
+
+def test_odds_refuses_a_lap_past_the_scheduled_distance():
+    """A lap number beyond the race length is a bug upstream, not a race.
+
+    `simulate_once` would run a negative number of laps and return the
+    current order as if it were a prediction -- a confident answer built
+    on nothing, which is the failure mode this project is most exposed
+    to.
+    """
+    from tests.conftest import make_raw_laps
+    from f1_predict import midrace
+
+    raw = make_raw_laps(drivers=("VER", "NOR"), n_laps=20)
+    raw["Position"] = 1.0
+    raw.loc[raw["Driver"] == "NOR", "Position"] = 2.0
+    frame = midrace.laps_frame(raw)
+
+    inputs = {
+        "coef": {"age_MEDIUM": 0.04},
+        "noise_s": 0.5,
+        "overtake_cost": 0.6,
+        "dnf_per_lap": 0.002,
+        "baseline_table": None,
+        "rounds": [1],
+    }
+
+    with pytest.raises(ValueError, match="past the scheduled"):
+        live.odds(frame, lap=60, total_laps=53, inputs=inputs, n_runs=10)

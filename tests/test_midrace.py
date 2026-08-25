@@ -358,6 +358,11 @@ def test_laps_frame_feeds_state_from_laps_unchanged():
     assert set(frame.columns) == {
         "driver", "lap_number", "position", "compound", "tyre_age",
         "stint", "elapsed_s", "pitted", "lap_seconds",
+        # `data.filter_laps` needs exactly these two to tell a racing lap
+        # from a caution or in-lap, and `live.live_pace` runs the live
+        # frame through it. Dropping them here does not fail loudly -- it
+        # silently returns the live path to medianing safety-car laps.
+        "track_status", "is_accurate",
     }
     # Real lap times, not nulls: the live predictor derives pace from this
     # column and a frame of NaN would silently drop every driver.

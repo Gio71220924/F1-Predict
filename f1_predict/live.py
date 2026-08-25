@@ -219,6 +219,25 @@ def history_inputs(year: int, round_no: int, total_laps: int) -> dict:
     }
 
 
+class NoScheduledLapCount(ValueError):
+    """`run_odds` found a recording with no TotalLaps yet.
+
+    A `ValueError` subclass rather than a plain one so a caller can catch
+    exactly this case without also swallowing an unrelated `ValueError`
+    from `history_inputs` or `odds` further down the sequence. Carries the
+    read `meta` (`n_drivers`, `errorcount`) that `read_laps` had already
+    produced before the missing lap count aborted the rest of the
+    sequence -- TotalLaps missing is a normal early-session state, not a
+    rare one, and it is exactly the moment an operator most needs to know
+    whether the read itself is producing real drivers and a sane error
+    count.
+    """
+
+    def __init__(self, message: str, meta: dict):
+        super().__init__(message)
+        self.meta = meta
+
+
 def run_odds(
     recording: str, year: int, round_no: int, n_runs: int
 ) -> tuple[pd.DataFrame, dict, dict, float]:
@@ -238,19 +257,22 @@ def run_odds(
     a refresh timer needs to bound how old the numbers can be, not just
     how long the read itself took.
 
-    Raises `ValueError` when the recording carries no scheduled lap count
-    yet -- TotalLaps arrives early in a session but not in its first
-    seconds -- so each caller presents that its own way instead of both
-    crashing on a `None` race distance.
+    Raises `NoScheduledLapCount` when the recording carries no scheduled
+    lap count yet -- TotalLaps arrives early in a session but not in its
+    first seconds -- so each caller presents that its own way instead of
+    both crashing on a `None` race distance. The exception carries the
+    read `meta` so a caller can still report what the read accomplished
+    before it aborts.
     """
     started = time.monotonic()
     frame, meta = read_laps(recording, year=year, round_no=round_no)
     total_laps = meta["total_laps"]
     if total_laps is None:
-        raise ValueError(
+        raise NoScheduledLapCount(
             "the recording carries no scheduled lap count, so there is no "
             "race distance to simulate to. TotalLaps arrives early in a "
-            "session but not in its first seconds."
+            "session but not in its first seconds.",
+            meta,
         )
     inputs = history_inputs(year, round_no, total_laps)
     out, odds_meta = odds(
@@ -281,7 +303,14 @@ def describe_age(seconds: float, lap: int, total_laps: int) -> str:
 def _report(recording: str, year: int, round_no: int, n_runs: int) -> None:
     try:
         out, meta, odds_meta, elapsed = run_odds(recording, year, round_no, n_runs)
-    except ValueError as exc:
+    except NoScheduledLapCount as exc:
+        # The read itself already ran -- print what it found before
+        # exiting. This is the rehearsal checklist's first two questions:
+        # did the read return drivers and laps, and is errorcount sane.
+        print(
+            f"read {exc.meta['n_drivers']} drivers, {exc.meta['errorcount']} "
+            f"bad lines"
+        )
         raise SystemExit(str(exc))
     print(f"read {meta['n_drivers']} drivers, {meta['errorcount']} bad lines")
     print(describe_age(elapsed, odds_meta["lap"], odds_meta["total_laps"]))

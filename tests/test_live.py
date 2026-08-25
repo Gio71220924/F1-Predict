@@ -297,16 +297,47 @@ def test_run_odds_refuses_a_recording_with_no_scheduled_lap_count(monkeypatch):
     """No TotalLaps means no race distance -- proceeding with None is a bug.
 
     TotalLaps arrives early in a session but not in its first seconds, so
-    this is a real, reachable state, not a hypothetical one. `run_odds`
-    must raise rather than hand `None` to `history_inputs` and `odds` as a
-    race distance.
+    this is a real, reachable state, not a hypothetical one -- and the
+    read itself may well have already produced real drivers and an
+    errorcount. `run_odds` must raise rather than hand `None` to
+    `history_inputs` and `odds` as a race distance, and the already
+    computed read meta must travel out on the raised error so a caller can
+    still report what the read accomplished before aborting. A test that
+    only checked the exception type would not catch the meta being
+    dropped, so this pins the actual dict.
     """
+    read_meta = {"errorcount": 2, "total_laps": None, "last_lap": 9, "n_drivers": 5}
+
     def fake_read_laps(recording, *, year, round_no, session_name="R"):
-        return pd.DataFrame(), {
-            "errorcount": 0, "total_laps": None, "last_lap": 0, "n_drivers": 0,
-        }
+        return pd.DataFrame(), read_meta
 
     monkeypatch.setattr(live, "read_laps", fake_read_laps)
 
-    with pytest.raises(ValueError, match="no scheduled lap count"):
+    with pytest.raises(live.NoScheduledLapCount, match="no scheduled lap count") as excinfo:
         live.run_odds("anything.txt", year=2026, round_no=13, n_runs=50)
+
+    assert excinfo.value.meta == read_meta, "the read meta must travel out on the raised error"
+
+
+def test_report_prints_the_read_diagnostic_before_aborting(monkeypatch, capsys):
+    """The abort path must still answer the rehearsal checklist's first two
+    questions: did the read return drivers and laps, and is errorcount
+    sane. Before this fix, `_report` printed that diagnostic line only on
+    the success path -- the missing-TotalLaps case, a NORMAL state early
+    in a session, silently lost it at exactly the moment an operator would
+    need it most, in the one session that cannot be re-run.
+    """
+    read_meta = {"errorcount": 2, "total_laps": None, "last_lap": 9, "n_drivers": 5}
+
+    def fake_read_laps(recording, *, year, round_no, session_name="R"):
+        return pd.DataFrame(), read_meta
+
+    monkeypatch.setattr(live, "read_laps", fake_read_laps)
+
+    with pytest.raises(SystemExit):
+        live._report("anything.txt", 2026, 13, 50)
+
+    out = capsys.readouterr().out
+    assert "read 5 drivers, 2 bad lines" in out, (
+        "the diagnostic must print before the SystemExit, not just on success"
+    )

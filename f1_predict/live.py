@@ -216,3 +216,50 @@ def history_inputs(year: int, round_no: int, total_laps: int) -> dict:
         "baseline_table": None,
         "rounds": past,
     }
+
+
+def describe_age(seconds: float, lap: int, total_laps: int) -> str:
+    """One sentence saying how far behind the cars this reading is.
+
+    Shown beside every probability. A refresh takes 3-4 seconds and runs
+    on a timer, so the display trails the race by tens of seconds -- less
+    than one lap, and never zero.
+    """
+    return (
+        f"Lap {lap} of {total_laps}, read {seconds:.0f} s ago. "
+        f"These are the cars as they crossed the line, not as they are now."
+    )
+
+
+def _report(recording: str, year: int, round_no: int, n_runs: int) -> None:
+    frame, meta = read_laps(recording, year=year, round_no=round_no)
+    print(f"read {meta['n_drivers']} drivers, {meta['errorcount']} bad lines")
+    total_laps = meta["total_laps"]
+    if total_laps is None:
+        raise SystemExit(
+            "the recording carries no scheduled lap count, so there is no "
+            "race distance to simulate to. TotalLaps arrives early in a "
+            "session but not in its first seconds."
+        )
+    inputs = history_inputs(year, round_no, total_laps)
+    out, odds_meta = odds(
+        frame, lap=meta["last_lap"], total_laps=total_laps,
+        inputs=inputs, n_runs=n_runs,
+    )
+    print(describe_age(0.0, odds_meta["lap"], total_laps))
+    print(out.to_string(float_format=lambda v: f"{v:.3f}"))
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run the live chain against a recording. Use it on the "
+                    "Practice 1 recording to prove the pipeline before the race."
+    )
+    parser.add_argument("--recording", required=True)
+    parser.add_argument("--year", type=int, default=2026)
+    parser.add_argument("--round", type=int, required=True, dest="round_no")
+    parser.add_argument("--runs", type=int, default=2000)
+    args = parser.parse_args()
+    _report(args.recording, args.year, args.round_no, args.runs)

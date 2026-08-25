@@ -1,10 +1,11 @@
 """Streamlit UI for the 2026 tyre, qualifying and race-outcome models."""
+import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from f1_predict import export, model, predict, quali, race, replay, strategy
+from f1_predict import export, live, model, predict, quali, race, replay, strategy
 
 LAPS_CSV = "data/processed/laps.csv"
 
@@ -123,9 +124,9 @@ def degradation_loss(compound, age, temp_delta):
     )
 
 
-degradation, next_tab, strategy_tab, quali_tab, odds_tab, midrace_tab, replay_tab, card = st.tabs(
+degradation, next_tab, strategy_tab, quali_tab, odds_tab, midrace_tab, live_tab, replay_tab, card = st.tabs(
     ["Degradation", "Next race", "Strategy", "Qualifying", "Race odds",
-     "Mid-race", "Replay", "Model card"]
+     "Mid-race", "Live", "Replay", "Model card"]
 )
 
 with degradation:
@@ -659,6 +660,76 @@ with midrace_tab:
             f"the same {n_races} races, so it is a trend, not "
             f"{len(curve)} independent measurements."
         )
+
+with live_tab:
+    st.header("A race as it runs")
+    st.caption(
+        "Reads a live timing recording and predicts the rest of the race "
+        "from it. Start the recorder before the session with "
+        "`python scripts/record_session.py <path>` -- an unrecorded "
+        "session cannot be recovered afterwards."
+    )
+
+    left, right = st.columns(2)
+    with left:
+        recording = st.text_input(
+            "Recording file", value="recordings/monza-race.txt"
+        )
+        round_no = st.number_input("Round", 1, 24, 13)
+    with right:
+        every = st.selectbox("Refresh every (seconds)", [15, 30, 60], index=1)
+        runs = st.selectbox("Simulations per refresh", [500, 2000], index=0)
+
+    if not Path(recording).exists():
+        st.info(
+            f"No recording at `{recording}` yet. This tab has nothing to "
+            f"show until a session has been recorded -- that is the cost "
+            f"of a live feed, and there is no archive of the stream to "
+            f"fall back on."
+        )
+    else:
+        @st.fragment(run_every=every)
+        def live_panel():
+            started = time.monotonic()
+            try:
+                frame, meta = live.read_laps(
+                    recording, year=2026, round_no=int(round_no)
+                )
+                total_laps = meta["total_laps"]
+                if total_laps is None:
+                    st.warning(
+                        "The recording carries no scheduled lap count yet. "
+                        "TotalLaps arrives early in a session but not in "
+                        "its first seconds."
+                    )
+                    return
+                inputs = live.history_inputs(2026, int(round_no), total_laps)
+                out, odds_meta = live.odds(
+                    frame, lap=meta["last_lap"], total_laps=total_laps,
+                    inputs=inputs, n_runs=int(runs),
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad read must not kill the tab
+                st.error(f"{type(exc).__name__}: {exc}")
+                return
+
+            elapsed = time.monotonic() - started
+            st.caption(live.describe_age(elapsed, odds_meta["lap"], total_laps))
+            if meta["errorcount"] > 20:
+                st.warning(
+                    f"{meta['errorcount']} unparseable lines in the "
+                    f"recording. One or two is the half-written final "
+                    f"line and is normal; this many means the recording "
+                    f"is not what it is being read as."
+                )
+            st.dataframe(out.style.format("{:.3f}"), width="stretch")
+            st.caption(
+                "The safety car is not modelled -- subsystem C2 measured "
+                "it across twelve races and it helped in none of them, so "
+                "it ships switched off. These probabilities assume green "
+                "flag racing to the end."
+            )
+
+        live_panel()
 
 with replay_tab:
     st.header("Lap-by-lap replay")

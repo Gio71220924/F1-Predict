@@ -222,3 +222,19 @@ def test_odds_refuses_a_lap_past_the_scheduled_distance():
 
     with pytest.raises(ValueError, match="past the scheduled"):
         live.odds(frame, lap=60, total_laps=53, inputs=inputs, n_runs=10)
+
+
+def test_the_display_states_how_stale_it_is():
+    """The number on screen describes a lap already completed.
+
+    Spec: "It must never present itself as instantaneous." A refresh
+    costs 3-4 seconds and runs on a 30-second timer, so the display is
+    tens of seconds behind the cars. Under one lap at Monza, and never
+    zero. A live feed that hides its own lag is the kind of false
+    confidence this project exists to avoid.
+    """
+    age = live.describe_age(seconds=34.0, lap=27, total_laps=53)
+
+    assert "27" in age and "53" in age
+    assert "34" in age
+    assert "live now" not in age.lower()

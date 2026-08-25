@@ -674,10 +674,24 @@ with live_tab:
         recording = st.text_input(
             "Recording file", value="recordings/monza-race.txt"
         )
-        round_no = st.number_input("Round", 1, 24, 13)
+        # Not `round_no`. That name is a module-level global three other
+        # places in this file also bind (the forward-prediction tab's
+        # number_input, and the Replay tab's ROUND_BY_EVENT lookup, which
+        # runs AFTER this tab and defaults to round 1), and `live_panel`
+        # below reads its inputs by value at definition time precisely
+        # because a fragment rerun does not re-execute this script. A
+        # shared name is one careless edit away from putting round 1 back
+        # into the live prediction, so the name is not shared.
+        live_round_no = st.number_input("Round", 1, 24, 13)
     with right:
         every = st.selectbox("Refresh every (seconds)", [15, 30, 60], index=1)
-        runs = st.selectbox("Simulations per refresh", [500, 2000], index=0)
+        # 2000 by default, not 500. At 500 runs a p=0.5 outcome carries
+        # about +-2.2 pp of Monte-Carlo error, and `live.odds` fixes
+        # seed=0, so that error is the SAME error every refresh rather
+        # than something that averages away as the operator watches. It
+        # costs about 6 s against 1.6 s, which the memoised
+        # `history_inputs` freed up several times over.
+        runs = st.selectbox("Simulations per refresh", [500, 2000], index=1)
 
     if not Path(recording).exists():
         st.info(
@@ -688,29 +702,72 @@ with live_tab:
         )
     else:
         @st.fragment(run_every=every)
-        def live_panel():
+        def live_panel(
+            path=recording,
+            round_no=int(live_round_no),
+            n_runs=int(runs),
+            interval=every,
+        ):
+            """Every widget value arrives as a DEFAULT ARGUMENT, by value.
+
+            `live_panel` is defined at module level -- a `with` block
+            creates no scope -- so a bare `round_no` inside it would
+            compile to LOAD_GLOBAL, not to a closure cell. And a
+            `run_every` rerun is fragment-scoped: Streamlit calls this
+            function directly without re-executing app.py, so whatever
+            the module globals happen to hold at that moment is what a
+            LOAD_GLOBAL would read. The Replay tab further down rebinds
+            the global `round_no` to `ROUND_BY_EVENT[replay_event]`,
+            which defaults to round 1 -- so every refresh after the first
+            would have predicted the Australian Grand Prix against a
+            Monza recording and raised "no completed round precedes 2026
+            round 1" as a permanent warning. Correct once, then dead
+            thirty seconds later, which is worse than never working.
+
+            Binding at definition time also means these values are
+            frozen for the life of the fragment: changing a widget
+            re-runs the script, which redefines this function with the
+            new defaults. That is the behaviour that was intended all
+            along.
+            """
             try:
                 out, meta, odds_meta, elapsed = live.run_odds(
-                    recording, year=2026, round_no=int(round_no), n_runs=int(runs)
+                    path, year=2026, round_no=round_no, n_runs=n_runs
                 )
-            except ValueError as exc:
+            except live.NoScheduledLapCount as exc:
+                # Normal early-session state, not a fault: TotalLaps has
+                # not arrived yet. Caught ahead of the broad handler so
+                # it stays a warning -- and so the read meta it carries
+                # is shown rather than discarded, which is the whole
+                # reason the exception carries it.
                 st.warning(str(exc))
+                st.caption(live.read_line(exc.meta))
                 return
             except Exception as exc:  # noqa: BLE001 - one bad read must not kill the tab
+                # Everything else, ValueError included. "lap 60 is past
+                # the scheduled 53-lap distance" is a bug upstream, not a
+                # session that has not started, and must not be dressed
+                # up as one.
                 st.error(f"{type(exc).__name__}: {exc}")
                 return
 
             # `elapsed` covers only this refresh's read-and-simulate. The
             # caption below stays on screen for the whole refresh interval,
-            # so the bound it states must add `every` -- otherwise it
+            # so the bound it states must add that interval -- otherwise it
             # understates the true lag by up to the length of that
             # interval, which is exactly the false confidence this tab
             # exists to avoid.
             st.caption(
                 live.describe_age(
-                    elapsed + every, odds_meta["lap"], odds_meta["total_laps"]
+                    elapsed + interval, odds_meta["lap"], odds_meta["total_laps"]
                 )
             )
+            # Unconditional, as the CLI already prints it. A table of
+            # probabilities looks identical whether the read found twenty
+            # drivers or three, and an operator with no read line cannot
+            # tell a thin recording from a healthy one until the answer
+            # is visibly wrong.
+            st.caption(live.read_line(meta, odds_meta))
             if meta["errorcount"] > 20:
                 st.warning(
                     f"{meta['errorcount']} unparseable lines in the "
@@ -718,7 +775,35 @@ with live_tab:
                     f"line and is normal; this many means the recording "
                     f"is not what it is being read as."
                 )
-            st.dataframe(out.style.format("{:.3f}"), width="stretch")
+            if odds_meta["dropped_no_pace"]:
+                st.warning(
+                    f"Dropped for want of a lap time: "
+                    f"{', '.join(odds_meta['dropped_no_pace'])}. They are in "
+                    f"the running order but have set no lap, and a race pace "
+                    f"cannot be invented for them. The probabilities below "
+                    f"are over the {odds_meta['n_drivers']} drivers that "
+                    f"remain and sum to 1 across those, not across the field."
+                )
+            if odds_meta["fallback_pace"]:
+                st.warning(
+                    f"On unfiltered pace: "
+                    f"{', '.join(odds_meta['fallback_pace'])}. No lap of "
+                    f"theirs survived the green-flag filter -- under a safety "
+                    f"car that is the whole field -- so their pace is a "
+                    f"median over caution, in and out laps and reads slower "
+                    f"than they are."
+                )
+            # `position_now` is a place, not a probability: formatting the
+            # whole frame at three decimals renders the leader as 1.000.
+            st.dataframe(
+                out.style.format(
+                    {
+                        **{c: "{:.3f}" for c in out.columns},
+                        "position_now": "{:.0f}",
+                    }
+                ),
+                width="stretch",
+            )
             st.caption(
                 "The safety car is not modelled -- subsystem C2 measured "
                 "it across twelve races and it helped in none of them, so "

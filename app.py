@@ -819,9 +819,12 @@ with live_tab:
 with replay_tab:
     st.header("Lap-by-lap replay")
     st.caption(
-        "A finished race fed back one lap at a time. This is not live timing: a live "
-        "feed needs a recorder running during the session, which cannot be "
-        "reconstructed after the fact."
+        "A finished race fed back one lap at a time, from the archive. This is "
+        "not the live feed -- that is the Live tab, and it reads a recording "
+        "made while the session was actually running. The two exist side by "
+        "side because a live stream cannot be reconstructed after the fact: "
+        "if nobody recorded a session, this tab is the only way to watch it "
+        "unfold, and it knows the ending."
     )
     replay_event = st.selectbox("Race", sorted(ROUND_BY_EVENT), key="replay_event")
     round_no = ROUND_BY_EVENT[replay_event]
@@ -922,6 +925,36 @@ with card:
 
     if fitted["physics_violations"]:
         st.error("Physics checks failed: " + "; ".join(fitted["physics_violations"]))
+
+    st.subheader("The live feed predicts nothing new")
+    st.info(
+        "**The Live tab runs the mid-race model unchanged -- not one line of "
+        "it differs from the numbers above.** All it adds is a different "
+        "source for the race state: a recording of the live timing stream, "
+        "read while the session is still being written to it, instead of "
+        "FastF1's archive after the fact. So everything the mid-race model is "
+        "limited by applies there in full, including that only two of its "
+        "twelve cells beat their baseline on evidence."
+    )
+    st.caption(
+        "One thing about it could not be established before a real session "
+        "existed, and is recorded here rather than left to be discovered on a "
+        "race day. That a half-written recording PARSES was measured offline: "
+        "two complete lines plus a truncated fragment yield one counted error "
+        "and no exception. That FastF1 builds usable LAPS from a partial "
+        "recording was not, and could not be -- its own documentation says "
+        "live timing data is \"not possible to use during a session\". A "
+        "Practice 1 rehearsal two days before the race is what settles it. If "
+        "it fails there, the answer is not to write a parser under time "
+        "pressure; it is to say so and run the retrospective path afterwards, "
+        "which is what the rest of this app already does."
+    )
+    st.caption(
+        "A session nobody recorded is gone. There is no archive of the live "
+        "stream to replay, so the machine has to be awake and online while "
+        "the session runs -- that is the cost of the approach, and there is "
+        "no way around it."
+    )
 
     st.subheader("What this model does and does not establish")
     st.markdown(

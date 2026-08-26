@@ -539,7 +539,15 @@ def _report(
             f"race, which fails the dry-compound one."
         )
     print(describe_age(elapsed, odds_meta["lap"], odds_meta["total_laps"]))
-    print(out.to_string(float_format=lambda v: f"{v:.3f}"))
+    # `position_now` is a place, not a probability. A blanket float_format
+    # renders the leader as 1.000, which the tab already avoids -- and this
+    # is the output the Practice 1 rehearsal is read from, so it should not
+    # be the scruffier of the two.
+    formatters = {
+        c: (lambda v: f"{v:.0f}") if c == "position_now" else (lambda v: f"{v:.3f}")
+        for c in out.columns
+    }
+    print(out.to_string(formatters=formatters))
 
 
 if __name__ == "__main__":

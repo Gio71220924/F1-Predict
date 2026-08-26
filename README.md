@@ -157,9 +157,9 @@ f1_predict/
   safety.py      Safety-car hazard and compression (measured, disabled)
   live.py        Record, read and predict from a live timing stream
   replay.py      Lap-by-lap playback of a finished race
-app.py           Nine-tab Streamlit interface
+app.py           Streamlit interface
 scripts/         Command-line recorder
-tests/           132 tests, no network, warnings as errors
+tests/           Synthetic fixtures only: no network, warnings as errors
 ```
 
 ```bash

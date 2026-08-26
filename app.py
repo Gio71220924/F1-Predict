@@ -1,4 +1,6 @@
 """Streamlit UI for the 2026 tyre, qualifying and race-outcome models."""
+import logging
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -101,6 +103,52 @@ temp_mean = fitted["track_temp_mean"]
 LAPS_BY_EVENT = laps.groupby("event_name")["lap_number"].max().astype(int).to_dict()
 ROUND_BY_EVENT = laps.groupby("event_name")["round"].first().astype(int).to_dict()
 EVENT_BY_ROUND = {r: e for e, r in ROUND_BY_EVENT.items()}
+
+
+@st.cache_data(show_spinner=False)
+def schedule_rounds():
+    """Round number -> event name for the whole 2026 calendar.
+
+    Read from FastF1's own schedule rather than from `laps.csv`, because
+    the two tabs that predict FORWARD need rounds that have not been
+    raced yet, and `laps.csv` stops at the last completed round by
+    construction. Round 0 is pre-season testing and is dropped.
+
+    Falls back to the completed rounds if the schedule cannot be read.
+    Every other tab renders from cached data with no network, and a
+    schedule that will not load should cost the future rounds, not the
+    whole page.
+    """
+    try:
+        import fastf1
+
+        logging.getLogger("fastf1").setLevel(logging.ERROR)
+        fastf1.Cache.enable_cache("cache")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            frame = fastf1.get_event_schedule(2026)
+        rounds = {
+            int(r): str(n)
+            for r, n in zip(frame["RoundNumber"], frame["EventName"])
+            if int(r) > 0
+        }
+        if rounds:
+            return rounds
+    except Exception:  # noqa: BLE001 - a schedule fetch must not blank the app
+        pass
+    return dict(EVENT_BY_ROUND)
+
+
+def next_unraced(rounds):
+    """The first round on the calendar with no laps in `laps.csv` yet.
+
+    A better default than a hardcoded number: it advances by itself as
+    the season runs, so these tabs open on the race actually coming up
+    rather than on whichever one was next when the line was written.
+    """
+    return min(
+        (r for r in rounds if r not in EVENT_BY_ROUND), default=max(rounds)
+    )
 TEMP_LO = float(laps["track_temp"].min())
 TEMP_HI = float(laps["track_temp"].max())
 
@@ -184,10 +232,21 @@ with next_tab:
         "honest holdout rather than a lookup."
     )
 
-    round_no = st.number_input(
-        "Round", min_value=1, max_value=24, value=12, step=1,
-        help="12 is the Dutch Grand Prix. A round whose sessions have not "
-             "run yet will say so rather than guess.",
+    # Named from F1's own calendar rather than typed as a bare number.
+    # Knowing that 13 means Monza is not something the tab should ask of
+    # whoever is reading it, and the numbers are F1's, so the dropdown
+    # and the official schedule cannot disagree.
+    calendar = schedule_rounds()
+    rounds = sorted(calendar)
+    round_no = st.selectbox(
+        "Round",
+        rounds,
+        index=rounds.index(next_unraced(calendar)),
+        format_func=lambda r: f"{r} - {calendar[r]}",
+        help="Straight from F1's 2026 calendar. Opens on the first round "
+             "with no laps recorded yet, which is the one coming up. A "
+             "round whose sessions have not run will say so rather than "
+             "guess.",
     )
     # Nested rather than guarded by st.stop(): st.stop() halts the whole
     # script, so a weekend with no data yet would blank every tab after this
@@ -682,7 +741,18 @@ with live_tab:
         # because a fragment rerun does not re-execute this script. A
         # shared name is one careless edit away from putting round 1 back
         # into the live prediction, so the name is not shared.
-        live_round_no = st.number_input("Round", 1, 24, 13)
+        live_calendar = schedule_rounds()
+        live_rounds = sorted(live_calendar)
+        live_round_no = st.selectbox(
+            "Round",
+            live_rounds,
+            index=live_rounds.index(next_unraced(live_calendar)),
+            format_func=lambda r: f"{r} - {live_calendar[r]}",
+            key="live_round",
+            help="Straight from F1's 2026 calendar. This has to match the "
+                 "session the recording is of -- reading a Monza recording "
+                 "as some other round loads the wrong session object.",
+        )
     with right:
         every = st.selectbox("Refresh every (seconds)", [15, 30, 60], index=1)
         # 2000 by default, not 500. At 500 runs a p=0.5 outcome carries

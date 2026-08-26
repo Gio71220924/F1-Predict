@@ -27,7 +27,14 @@ import time
 # tell the operator to run, for the one component whose session cannot be
 # recorded twice. Nothing in the test suite caught it because the suite
 # imports the package, never this script as `__main__`.
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+#
+# `append`, not `insert(0, ...)`. The repo root holds data/, cache/,
+# models/, scripts/ and tests/, each of which Python will happily treat
+# as a namespace package. Ahead of site-packages, a dependency doing
+# `import data` or `import cache` would resolve to a directory of ours
+# instead of the library it meant. Appended, the root is consulted only
+# after the real packages, which is all f1_predict needs.
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from f1_predict import live  # noqa: E402 - after the sys.path fix above
 

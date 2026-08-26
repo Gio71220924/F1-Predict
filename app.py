@@ -788,10 +788,13 @@ with live_tab:
                 st.warning(
                     f"On unfiltered pace: "
                     f"{', '.join(odds_meta['fallback_pace'])}. No lap of "
-                    f"theirs survived the green-flag filter -- under a safety "
-                    f"car that is the whole field -- so their pace is a "
-                    f"median over caution, in and out laps and reads slower "
-                    f"than they are."
+                    f"theirs survived the filter, so their pace is a median "
+                    f"over whatever laps they have and reads slower than "
+                    f"they are. Two things put a whole field here at once, "
+                    f"and they are not the same: a safety car, which fails "
+                    f"the green-flag test, and a wet race, which fails the "
+                    f"dry-compound one. Check which before reading anything "
+                    f"into these numbers."
                 )
             # `position_now` is a place, not a probability: formatting the
             # whole frame at three decimals renders the leader as 1.000.

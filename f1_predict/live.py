@@ -159,12 +159,16 @@ def live_pace(seen: pd.DataFrame) -> tuple[pd.Series, list[str]]:
     driver two laps into a fresh set has to be predicted anyway. Nothing
     else is relaxed and nothing new is invented.
 
-    The per-driver fallback is not a nicety. Under a safety car on lap 3
-    EVERY lap in the frame has `track_status != "1"`, so a strict filter
-    empties the frame for every driver at once and `odds` would abort for
-    "fewer than 2 drivers" -- taking the tab down at precisely the moment
-    a caution makes it worth watching. A driver whose filtered sample is
-    empty therefore falls back to the median of their OWN unfiltered
+    The per-driver fallback is not a nicety. TWO different situations
+    empty the frame for the whole field at once, and a reader who knows
+    only the first will look for the wrong one. Under a safety car on lap
+    3 every lap has `track_status != "1"`. In a wet race every lap is on
+    INTERMEDIATE or WET, and `filter_laps` keeps only `DRY_COMPOUNDS` --
+    so a race that never sees a caution can still put every driver here,
+    from lap 1 to the flag. Either way a strict filter would leave `odds`
+    aborting for "fewer than 2 drivers", taking the tab down at precisely
+    the moment the race gets interesting. A driver whose filtered sample
+    is empty therefore falls back to the median of their OWN unfiltered
     laps: a worse number, clearly worse, but the caller is told how many
     drivers are on it and can say so, which is better than no number.
     """
@@ -528,9 +532,11 @@ def _report(
     if odds_meta["fallback_pace"]:
         print(
             f"On unfiltered pace: {', '.join(odds_meta['fallback_pace'])}. No "
-            f"lap of theirs survived the green-flag filter -- under a safety "
-            f"car that is everyone -- so their pace is a median over caution, "
-            f"in and out laps and reads slower than they are."
+            f"lap of theirs survived the filter, so their pace is a median "
+            f"over whatever laps they have and reads slower than they are. "
+            f"Two things put a whole field here at once, and they are not the "
+            f"same: a safety car, which fails the green-flag test, and a wet "
+            f"race, which fails the dry-compound one."
         )
     print(describe_age(elapsed, odds_meta["lap"], odds_meta["total_laps"]))
     print(out.to_string(float_format=lambda v: f"{v:.3f}"))

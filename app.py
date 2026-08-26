@@ -1,12 +1,12 @@
 """Streamlit UI for the 2026 tyre, qualifying and race-outcome models."""
-import logging
-import warnings
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from f1_predict import export, live, model, predict, quali, race, replay, strategy
+from f1_predict import (
+    export, live, model, predict, quali, race, replay, sessions, strategy
+)
 
 LAPS_CSV = "data/processed/laps.csv"
 
@@ -107,48 +107,22 @@ EVENT_BY_ROUND = {r: e for e, r in ROUND_BY_EVENT.items()}
 
 @st.cache_data(show_spinner=False)
 def schedule_rounds():
-    """Round number -> event name for the whole 2026 calendar.
+    """The 2026 calendar as round number -> event name, cached.
 
-    Read from FastF1's own schedule rather than from `laps.csv`, because
-    the two tabs that predict FORWARD need rounds that have not been
-    raced yet, and `laps.csv` stops at the last completed round by
-    construction. Round 0 is pre-season testing and is dropped.
+    The read itself lives in `sessions.calendar`, where it is testable
+    without Streamlit. This wrapper adds two things the library has no
+    business deciding: the caching, and what to do when the schedule
+    cannot be read at all.
 
-    Falls back to the completed rounds if the schedule cannot be read.
-    Every other tab renders from cached data with no network, and a
-    schedule that will not load should cost the future rounds, not the
-    whole page.
+    On failure it falls back to the rounds there are laps for. Every
+    other tab in this app renders offline from cached data, so a
+    schedule that will not load should cost the future rounds rather
+    than the whole page.
     """
     try:
-        import fastf1
-
-        logging.getLogger("fastf1").setLevel(logging.ERROR)
-        fastf1.Cache.enable_cache("cache")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            frame = fastf1.get_event_schedule(2026)
-        rounds = {
-            int(r): str(n)
-            for r, n in zip(frame["RoundNumber"], frame["EventName"])
-            if int(r) > 0
-        }
-        if rounds:
-            return rounds
+        return sessions.calendar(2026)
     except Exception:  # noqa: BLE001 - a schedule fetch must not blank the app
-        pass
-    return dict(EVENT_BY_ROUND)
-
-
-def next_unraced(rounds):
-    """The first round on the calendar with no laps in `laps.csv` yet.
-
-    A better default than a hardcoded number: it advances by itself as
-    the season runs, so these tabs open on the race actually coming up
-    rather than on whichever one was next when the line was written.
-    """
-    return min(
-        (r for r in rounds if r not in EVENT_BY_ROUND), default=max(rounds)
-    )
+        return dict(EVENT_BY_ROUND)
 TEMP_LO = float(laps["track_temp"].min())
 TEMP_HI = float(laps["track_temp"].max())
 
@@ -241,7 +215,7 @@ with next_tab:
     round_no = st.selectbox(
         "Round",
         rounds,
-        index=rounds.index(next_unraced(calendar)),
+        index=rounds.index(sessions.next_unraced(calendar, EVENT_BY_ROUND)),
         format_func=lambda r: f"{r} - {calendar[r]}",
         help="Straight from F1's 2026 calendar. Opens on the first round "
              "with no laps recorded yet, which is the one coming up. A "
@@ -746,7 +720,9 @@ with live_tab:
         live_round_no = st.selectbox(
             "Round",
             live_rounds,
-            index=live_rounds.index(next_unraced(live_calendar)),
+            index=live_rounds.index(
+                sessions.next_unraced(live_calendar, EVENT_BY_ROUND)
+            ),
             format_func=lambda r: f"{r} - {live_calendar[r]}",
             key="live_round",
             help="Straight from F1's 2026 calendar. This has to match the "

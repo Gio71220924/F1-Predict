@@ -18,6 +18,44 @@ from f1_predict import data
 SESSION_PREFERENCE = ["SQ", "FP3", "FP2", "FP1"]
 
 
+def calendar(year: int) -> dict[int, str]:
+    """Round number to event name, for a whole season's races.
+
+    Read from FastF1's schedule rather than from collected laps, because
+    the forward-predicting parts of this project need rounds that have
+    NOT been raced yet, and a lap table stops at the last completed round
+    by construction.
+
+    `include_testing=False` drops pre-season testing, which FastF1
+    numbers round 0 -- the same argument every other schedule read in
+    this project already passes.
+    """
+    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.Cache.enable_cache("cache")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        frame = fastf1.get_event_schedule(year, include_testing=False)
+    return {
+        int(r): str(n)
+        for r, n in zip(frame["RoundNumber"], frame["EventName"])
+    }
+
+
+def next_unraced(rounds, completed) -> int:
+    """The first round in `rounds` with no laps recorded for it yet.
+
+    A season moves. A hardcoded "next race" is wrong the day after that
+    race runs, and wrong in a way nobody notices until a prediction comes
+    back for the wrong circuit -- so the default is derived from what has
+    actually been raced rather than written down.
+
+    Falls back to the last round on the calendar once every round has
+    been raced. A finished season should still render something rather
+    than raise on an empty `min()`.
+    """
+    return min((r for r in rounds if r not in completed), default=max(rounds))
+
+
 def weekend_format(event_format: str) -> str:
     """Normalise FastF1's EventFormat to 'sprint' or 'conventional'."""
     return "sprint" if "sprint" in event_format.lower() else "conventional"
